@@ -590,6 +590,61 @@ describe("WorkspaceSession", () => {
 		expect(session.hasOverrideFor(leftLeaf, "maps/a.md")).toBe(false);
 	});
 
+	it("returns context-aware file menu open actions for Mind Map, Source Mode, Split View, and unopened files", async () => {
+		const mindLeaf: FakeLeaf = {
+			id: "L1",
+			kind: "mindmap",
+			filePath: "maps/a.md",
+			markdown: "# A",
+			dirty: false,
+			rect: { left: 0, top: 0, width: 500, height: 800 },
+		};
+		const { session, setAutoOpen } = createWorkspaceHarness({
+			initialLeaves: [mindLeaf],
+			mindMapPaths: ["maps/a.md", "maps/b.md"],
+			autoOpen: true,
+		});
+
+		// 1. Currently open as Mind Map -> offer Source Mode on that leaf
+		expect(session.getFileMenuOpenAction("maps/a.md")).toEqual({
+			action: "open-source",
+			targetLeaf: mindLeaf,
+		});
+
+		// 2. Unopened Mind Map Note with auto-open enabled -> offer Source Mode
+		expect(session.getFileMenuOpenAction("maps/b.md")).toEqual({
+			action: "open-source",
+			targetLeaf: null,
+		});
+
+		// 3. Regular Markdown note -> offer Mind Map
+		expect(session.getFileMenuOpenAction("notes/plain.md")).toEqual({
+			action: "open-mindmap",
+			targetLeaf: null,
+		});
+
+		// 4. Open in Split View -> no single-pane switch action
+		await session.openOrSwitchSplit(mindLeaf, "left-right");
+		expect(session.getFileMenuOpenAction("maps/a.md")).toEqual({
+			action: "none",
+		});
+
+		// 5. After closing Split View and switching to Source Mode -> offer Mind Map
+		await session.closeSplit(mindLeaf);
+		await session.openSourceMode(mindLeaf, "maps/a.md");
+		expect(session.getFileMenuOpenAction("maps/a.md")).toEqual({
+			action: "open-mindmap",
+			targetLeaf: mindLeaf,
+		});
+
+		// 6. Unopened Mind Map Note when auto-open is disabled -> offer Mind Map
+		setAutoOpen(false);
+		expect(session.getFileMenuOpenAction("maps/b.md")).toEqual({
+			action: "open-mindmap",
+			targetLeaf: null,
+		});
+	});
+
 	it("performs debounced bidirectional sync with echo suppression and focus-change flush", async () => {
 		const mindLeaf: FakeLeaf = {
 			id: "L1",
