@@ -649,15 +649,34 @@ export default class SimpleMindMapPlugin extends Plugin {
 							});
 					});
 				} else if (file instanceof TFile && file.extension === "md") {
-					menu.addItem((item) => {
-						item
-							.setTitle("以脑图视图打开")
-							.setIcon(MINDMAP_ICON_ID)
-							.onClick(() => {
-								const leaf = this.app.workspace.getLeaf(false);
-								void this.session.openMindMap(leaf, file.path);
-							});
-					});
+					const menuAction = this.session.getFileMenuOpenAction(file.path);
+					if (menuAction.action === "open-source") {
+						menu.addItem((item) => {
+							item
+								.setTitle("以 Markdown 源码打开")
+								.setIcon("code-2")
+								.onClick(() => {
+									const leaf =
+										menuAction.targetLeaf ?? this.app.workspace.getLeaf(false);
+									void this.session.openSourceMode(leaf, file.path, {
+										focus: true,
+									});
+								});
+						});
+					} else if (menuAction.action === "open-mindmap") {
+						menu.addItem((item) => {
+							item
+								.setTitle("以脑图视图打开")
+								.setIcon(MINDMAP_ICON_ID)
+								.onClick(() => {
+									const leaf =
+										menuAction.targetLeaf ?? this.app.workspace.getLeaf(false);
+									void this.session.openMindMap(leaf, file.path, {
+										focus: true,
+									});
+								});
+						});
+					}
 				}
 			})
 		);

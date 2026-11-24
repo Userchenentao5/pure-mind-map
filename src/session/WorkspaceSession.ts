@@ -27,6 +27,11 @@ export interface SplitState<TLeaf extends object> {
 	counterpartLeaf: TLeaf | null;
 }
 
+export type FileMenuOpenAction<TLeaf extends object> =
+	| { action: "open-source"; targetLeaf: TLeaf | null }
+	| { action: "open-mindmap"; targetLeaf: TLeaf | null }
+	| { action: "none" };
+
 export interface ShortcutKeyLike {
 	ctrlKey: boolean;
 	metaKey: boolean;
@@ -270,7 +275,11 @@ export class WorkspaceSession<TLeaf extends object> {
 		return false;
 	}
 
-	public async openSourceMode(leaf: TLeaf, filePath: string): Promise<void> {
+	public async openSourceMode(
+		leaf: TLeaf,
+		filePath: string,
+		options?: { focus?: boolean }
+	): Promise<void> {
 		if (!filePath || this.isMutating) return;
 		const snap = this.adapter.inspectLeaf(leaf);
 		if (
@@ -289,6 +298,9 @@ export class WorkspaceSession<TLeaf extends object> {
 				filePath,
 				mode: "source",
 			});
+			if (options?.focus) {
+				this.adapter.focusLeaf(leaf);
+			}
 			this.pruneStaleSplitSessions();
 			this.adapter.refreshUi();
 		} finally {
@@ -379,6 +391,37 @@ export class WorkspaceSession<TLeaf extends object> {
 
 	public canSplit(leaf: TLeaf): boolean {
 		return this.isMindMapNoteLeaf(leaf);
+	}
+
+	/**
+	 * Decides the context-aware File Explorer menu action for a Markdown file:
+	 * - Already in Split View -> none (single-pane switching is locked)
+	 * - Open in Mind Map only -> open in Source Mode
+	 * - Open in Source Mode only -> open in Mind Map
+	 * - Not open: Mind Map Note with auto-open enabled -> open in Source Mode; otherwise open in Mind Map
+	 */
+	public getFileMenuOpenAction(filePath: string): FileMenuOpenAction<TLeaf> {
+		if (!filePath) return { action: "none" };
+
+		const mindMapLeaves = this.findLeavesByKind(filePath, "mindmap");
+		const markdownLeaves = this.findLeavesByKind(filePath, "markdown");
+
+		if (mindMapLeaves.length > 0 && markdownLeaves.length > 0) {
+			return { action: "none" };
+		}
+		if (mindMapLeaves.length > 0) {
+			return { action: "open-source", targetLeaf: mindMapLeaves[0] };
+		}
+		if (markdownLeaves.length > 0) {
+			return { action: "open-mindmap", targetLeaf: markdownLeaves[0] };
+		}
+		if (
+			this.adapter.isAutoOpenEnabled() &&
+			this.adapter.isMindMapPath(filePath)
+		) {
+			return { action: "open-source", targetLeaf: null };
+		}
+		return { action: "open-mindmap", targetLeaf: null };
 	}
 
 	public getSplitState(leaf: TLeaf): SplitState<TLeaf> {
