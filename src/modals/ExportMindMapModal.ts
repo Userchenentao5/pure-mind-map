@@ -2,10 +2,10 @@ import { App, Modal, Setting, TFolder, type TFile } from "obsidian";
 import {
 	EXPORT_FORMATS,
 	getExportFormatMeta,
-	resolveExportFolder,
 	type ExportDestination,
 	type ExportFormat,
-} from "../export/exporterCore";
+} from "../export/MindMapExportPipeline";
+import { resolveDefaultVaultFolder } from "../vault/vaultPaths";
 
 export interface ExportModalOptions {
 	sourceFile: TFile | null;
@@ -35,7 +35,7 @@ export class ExportMindMapModal extends Modal {
 		super(app);
 		this.options = options;
 		this.format = options.initialFormat ?? "png";
-		this.vaultFolder = resolveExportFolder(
+		this.vaultFolder = resolveDefaultVaultFolder(
 			options.defaultFolder,
 			options.sourceFile?.parent?.path
 		);
