@@ -1,0 +1,10 @@
+{
+  "id": "simple-obsidian-mind-map",
+  "name": "Simple Obsidian Mind Map",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Create and edit interactive mind maps backed by standard Markdown files, with one-click switching between mind map view and source mode.",
+  "author": "Simple Obsidian Mind Map",
+  "authorUrl": "",
+  "isDesktopOnly": false
+}
