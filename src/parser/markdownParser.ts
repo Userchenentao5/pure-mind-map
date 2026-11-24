@@ -72,6 +72,12 @@ export function isMindMapFrontmatterValue(value: unknown): boolean {
 	if (value === undefined || value === null || value === false) {
 		return false;
 	}
+	if (typeof value === "boolean") {
+		return value;
+	}
+	if (typeof value !== "string" && typeof value !== "number") {
+		return false;
+	}
 	const text = String(value).trim().toLowerCase();
 	return text !== "" && text !== "false";
 }
@@ -548,7 +554,7 @@ export function renderNodeMarkdown(
 ): string {
 	const placeholders: string[] = [];
 	const stash = (html: string): string => {
-		const token = `\u0000MM_${placeholders.length}\u0000`;
+		const token = `\uE000MM_${placeholders.length}\uE001`;
 		placeholders.push(html);
 		return token;
 	};
@@ -617,7 +623,7 @@ export function renderNodeMarkdown(
 	text = text.replace(/__(.+?)__/g, "<strong>$1</strong>");
 	text = text.replace(/~~(.+?)~~/g, "<del>$1</del>");
 	text = text.replace(/==(.+?)==/g, '<mark class="mm-highlight">$1</mark>');
-	text = text.replace(/(?<!\*)\*(?!\*)([^*]+?)\*(?!\*)/g, "<em>$1</em>");
+	text = text.replace(/(^|[^*])\*([^*]+?)\*(?!\*)/g, "$1<em>$2</em>");
 
 	// 7. Inline Obsidian tags (#tag)
 	text = text.replace(
@@ -629,7 +635,7 @@ export function renderNodeMarkdown(
 	text = text.replace(/\r?\n/g, "<br>");
 
 	// Restore stashed HTML tokens
-	text = text.replace(/\u0000MM_(\d+)\u0000/g, (_m, idxStr: string) => {
+	text = text.replace(/\uE000MM_(\d+)\uE001/g, (_m, idxStr: string) => {
 		return placeholders[Number(idxStr)] ?? "";
 	});
 

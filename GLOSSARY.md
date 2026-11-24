@@ -1,4 +1,4 @@
-# Simple Obsidian Mind Map
+# Pure Mind Map
 
 An Obsidian plugin that renders standard Markdown notes as interactive mind maps with seamless switching to native Markdown source editing.
 

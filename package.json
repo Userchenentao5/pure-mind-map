@@ -1,11 +1,12 @@
 {
-  "name": "simple-obsidian-mind-map",
-  "version": "0.1.0",
-  "description": "Interactive mind map plugin for Obsidian backed by Markdown files with source mode switching.",
+  "name": "pure-mind-map",
+  "version": "1.0.0",
+  "description": "Create and edit interactive mind maps backed by standard Markdown files, with one-click switching between mind map view and source mode.",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -17,9 +18,13 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "esbuild": "^0.25.0",
+    "eslint": "^9.39.5",
+    "eslint-plugin-obsidianmd": "^0.6.0",
+    "globals": "^17.14.0",
     "obsidian": "latest",
     "tslib": "^2.8.1",
     "typescript": "^5.8.0",
+    "typescript-eslint": "^8.74.0",
     "vitest": "^3.1.0"
   }
 }

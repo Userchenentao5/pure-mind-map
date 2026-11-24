@@ -24,10 +24,8 @@ export class MindMapSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
-		containerEl.createEl("h2", { text: "Simple Obsidian Mind Map 设置" });
-
 		// --- 常规设置 ---
-		containerEl.createEl("h3", { text: "常规与外观" });
+		new Setting(containerEl).setName("常规与外观").setHeading();
 
 		new Setting(containerEl)
 			.setName("自动以脑图视图打开")
@@ -102,7 +100,7 @@ export class MindMapSettingTab extends PluginSettingTab {
 			);
 
 		// --- 文件与导出 ---
-		containerEl.createEl("h3", { text: "文件与图片导出" });
+		new Setting(containerEl).setName("文件与图片导出").setHeading();
 
 		new Setting(containerEl)
 			.setName("新建脑图默认目录")
@@ -146,7 +144,7 @@ export class MindMapSettingTab extends PluginSettingTab {
 			);
 
 		// --- 快捷键设置 ---
-		containerEl.createEl("h3", { text: "画布快捷键自定义" });
+		new Setting(containerEl).setName("画布快捷键自定义").setHeading();
 		containerEl.createEl("p", {
 			cls: "setting-item-description",
 			text: "填写 KeyboardEvent.key 名称（例如 Tab、Enter、F2、Delete、F1、Space）。切换脑图/源码默认快捷键为 Ctrl+.；注意在中文输入法且光标位于源码或节点编辑框内时，Windows 输入法可能先拦截 Ctrl+. 切换标点，建议在 Obsidian「设置 → 快捷键」中将其改绑为 Alt+M 或 Ctrl+Shift+M。",

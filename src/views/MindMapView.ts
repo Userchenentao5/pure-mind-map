@@ -1,10 +1,10 @@
 import {
 	Notice,
+	TFile,
 	TextFileView,
 	WorkspaceLeaf,
 	normalizePath,
 	setIcon,
-	type TFile,
 } from "obsidian";
 import MindElixir, {
 	type MindElixirData,
@@ -276,10 +276,10 @@ export class MindMapView extends TextFileView {
 	}
 
 	private buildObsidianTheme() {
-		const styles = getComputedStyle(document.body);
+		const styles = getComputedStyle(activeDocument.body);
 		return buildCanvasTheme(
 			this.plugin.settings.themeMode,
-			document.body.classList.contains("theme-dark"),
+			activeDocument.body.classList.contains("theme-dark"),
 			(name) => styles.getPropertyValue(name)
 		);
 	}
@@ -307,8 +307,8 @@ export class MindMapView extends TextFileView {
 		}
 
 		const directFile = this.app.vault.getAbstractFileByPath(normalizePath(cleanTarget));
-		if (directFile && "extension" in directFile) {
-			return this.app.vault.getResourcePath(directFile as TFile);
+		if (directFile instanceof TFile) {
+			return this.app.vault.getResourcePath(directFile);
 		}
 
 		return null;
@@ -318,7 +318,7 @@ export class MindMapView extends TextFileView {
 		const target = evt.target as HTMLElement | null;
 		if (!target) return;
 
-		const wikiLink = target.closest("a.mm-wikilink") as HTMLAnchorElement | null;
+		const wikiLink = target.closest<HTMLAnchorElement>("a.mm-wikilink");
 		if (wikiLink) {
 			evt.preventDefault();
 			evt.stopPropagation();
@@ -334,7 +334,7 @@ export class MindMapView extends TextFileView {
 			return;
 		}
 
-		const extLink = target.closest("a.mm-extlink") as HTMLAnchorElement | null;
+		const extLink = target.closest<HTMLAnchorElement>("a.mm-extlink");
 		if (extLink) {
 			evt.stopPropagation();
 		}
@@ -344,7 +344,7 @@ export class MindMapView extends TextFileView {
 		const target = evt.target as HTMLElement | null;
 		if (!target) return;
 
-		const wikiLink = target.closest("a.mm-wikilink") as HTMLAnchorElement | null;
+		const wikiLink = target.closest<HTMLAnchorElement>("a.mm-wikilink");
 		if (!wikiLink) return;
 		const href = wikiLink.dataset.href;
 		if (!href) return;
