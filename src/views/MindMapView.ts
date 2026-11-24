@@ -10,24 +10,21 @@ import MindElixir, {
 	type MindElixirData,
 } from "mind-elixir";
 import type SimpleMindMapPlugin from "../main";
+import { MindMapDocument } from "../parser/MindMapDocument";
+import { renderNodeMarkdown } from "../parser/markdownParser";
 import {
-	markdownToMindMap,
-	mindMapToMarkdown,
-	renderNodeMarkdown,
-} from "../parser/markdownParser";
-import {
-	MINDMAP_DIRECTION_KEY,
 	MINDMAP_ICON_ID,
 	MINDMAP_VIEW_TYPE,
+	SPLIT_LEFT_RIGHT_ICON_ID,
+	SPLIT_TOP_BOTTOM_ICON_ID,
 	type MindMapDirection,
 	codeToDirection,
 	directionToCode,
 } from "../settings/types";
-import { ImageSuggestModal, NoteLinkSuggestModal } from "../modals/VaultSuggestModals";
 import { ExportMindMapModal } from "../modals/ExportMindMapModal";
 import { NodeInlineEditor } from "../editor/NodeInlineEditor";
 import { MindMapExporter } from "../export/MindMapExporter";
-import type { ExportFormat } from "../export/exporterCore";
+import type { ExportFormat } from "../export/MindMapExportPipeline";
 import {
 	buildCanvasKeypressOptions,
 	buildCanvasTheme,
@@ -38,17 +35,17 @@ export class MindMapView extends TextFileView {
 	private mind: MindElixir | null = null;
 	private mapHostEl: HTMLElement | null = null;
 	private toolbarEl: HTMLElement | null = null;
-	private existingFrontmatterRaw: string | null = null;
-	private currentDirection: MindMapDirection = "side";
-	private lastSavedMarkdown = "";
+	private document: MindMapDocument;
 	private isInternalRefresh = false;
+	private mountedHotkeysKey = "";
+	private splitHeaderActionEl: HTMLElement | null = null;
 	private inlineEditor: NodeInlineEditor;
 	private exporter: MindMapExporter;
 
 	constructor(leaf: WorkspaceLeaf, plugin: SimpleMindMapPlugin) {
 		super(leaf);
 		this.plugin = plugin;
-		this.currentDirection = plugin.settings.defaultDirection;
+		this.document = new MindMapDocument(plugin.settings.defaultDirection);
 		this.inlineEditor = new NodeInlineEditor(this.app, {
 			getMind: () => this.mind,
 			getSourcePath: () => this.file?.path ?? "",
@@ -72,8 +69,18 @@ export class MindMapView extends TextFileView {
 		this.contentEl.empty();
 		this.contentEl.addClass("mm-view-container");
 
+		this.splitHeaderActionEl = this.addAction(
+			SPLIT_LEFT_RIGHT_ICON_ID,
+			"拆分视图（脑图 + 源码）",
+			(evt) => {
+				this.plugin.openSplitViewMenu(this.leaf, evt);
+			}
+		);
+		this.splitHeaderActionEl.addClass("mm-split-header-action");
 		this.addAction("code-2", "切换到 Markdown 源码模式 (Ctrl+.)", () => {
-			void this.plugin.switchLeafToMarkdown(this.leaf, this.file);
+			if (this.file) {
+				void this.plugin.session.openSourceMode(this.leaf, this.file.path);
+			}
 		});
 		this.addAction("download", "导出脑图（可选格式与目录）", () => {
 			this.openExportModal();
@@ -83,6 +90,16 @@ export class MindMapView extends TextFileView {
 		this.buildToolbar(this.toolbarEl);
 
 		this.mapHostEl = this.contentEl.createDiv({ cls: "mm-canvas-host" });
+		this.registerDomEvent(
+			this.mapHostEl,
+			"pointerdown",
+			() => {
+				if (this.file) {
+					this.plugin.session.flushSourceToMindMap(this.file.path);
+				}
+			},
+			true
+		);
 		this.registerDomEvent(this.mapHostEl, "click", (evt) => this.handleCanvasClick(evt), true);
 		this.registerDomEvent(this.mapHostEl, "mouseover", (evt) => this.handleCanvasHover(evt));
 		this.inlineEditor.attach(this.mapHostEl);
@@ -92,6 +109,7 @@ export class MindMapView extends TextFileView {
 				this.applyCurrentTheme();
 			})
 		);
+		this.refreshSplitButtons();
 	}
 
 	async onClose(): Promise<void> {
@@ -100,66 +118,125 @@ export class MindMapView extends TextFileView {
 	}
 
 	getViewData(): string {
-		if (!this.mind) {
-			return this.data ?? "";
+		return this.document.serialize(
+			this.mind ? this.mind.getData() : null,
+			this.plugin.settings.markdownStyle,
+			this.data ?? ""
+		);
+	}
+
+	async save(clear?: boolean): Promise<void> {
+		const snapshot = this.getViewData();
+		this.document.markSaveInFlight(snapshot);
+		await super.save(clear);
+		if (!clear) {
+			this.document.markSaved(snapshot);
 		}
-		const data = this.mind.getData();
-		const markdown = mindMapToMarkdown(data, {
-			existingFrontmatterRaw: this.existingFrontmatterRaw,
-			style: this.plugin.settings.markdownStyle,
-			direction: this.currentDirection,
-		});
-		this.lastSavedMarkdown = markdown;
-		return markdown;
 	}
 
 	setViewData(data: string, clear: boolean): void {
 		this.data = data;
+		if (this.file?.path) {
+			this.plugin.session.recordSyncedMarkdown(this.file.path, data);
+		}
+		this.applyMarkdownData(data, clear);
+	}
 
-		// Skip redundant re-renders triggered by our own save cycle
-		if (!clear && this.mind && data === this.lastSavedMarkdown) {
+	public syncFromExternalMarkdown(markdown: string): void {
+		if (markdown === this.document.lastSyncedMarkdown) {
+			return;
+		}
+		this.data = markdown;
+		try {
+			this.applyMarkdownData(markdown, false);
+		} catch {
+			// Ignore transient parse/render failures while user is mid-keystroke in Source Mode
+		}
+	}
+
+	private applyMarkdownData(data: string, clear: boolean): void {
+		const decision = this.document.reconcileExternalMarkdown(data, {
+			fallbackTitle: this.file?.basename ?? "中心主题",
+			defaultDirection: this.plugin.settings.defaultDirection,
+			clear,
+			hasCanvas: this.mind !== null,
+		});
+
+		if (decision.action === "noop") {
 			return;
 		}
 
-		const fallbackTitle = this.file?.basename ?? "中心主题";
-		const parsed = markdownToMindMap(data, fallbackTitle);
-		this.existingFrontmatterRaw = parsed.frontmatter.raw;
-		this.currentDirection =
-			parsed.frontmatter.properties[MINDMAP_DIRECTION_KEY]
-				? parsed.direction
-				: this.plugin.settings.defaultDirection;
-		parsed.data.direction = directionToCode(this.currentDirection);
-
-		this.lastSavedMarkdown = data;
-
-		if (clear || !this.mind) {
-			void this.mountMindMap(parsed.data);
-		} else {
+		if (decision.action === "mount") {
+			void this.mountMindMap(decision.data);
+		} else if (this.mind) {
 			this.isInternalRefresh = true;
 			try {
-				this.mind.direction = directionToCode(this.currentDirection);
-				this.mind.refresh(parsed.data);
+				this.mind.direction = directionToCode(decision.direction);
+				this.mind.refresh(decision.data);
 				this.mind.clearHistory?.();
 			} finally {
 				this.isInternalRefresh = false;
 			}
 			this.updateDirectionButtons();
 		}
+		this.refreshSplitButtons();
 	}
 
 	clear(): void {
-		this.lastSavedMarkdown = "";
-		this.existingFrontmatterRaw = null;
+		this.document.clear(this.plugin.settings.defaultDirection);
 		this.destroyMindMap();
+	}
+
+	public hasPendingLocalEdits(): boolean {
+		return this.document.hasPendingLocalEdits();
+	}
+
+	public recenterCanvas(): void {
+		if (!this.mind) return;
+		const mind = this.mind;
+		window.requestAnimationFrame(() => {
+			if (this.mind === mind) {
+				mind.toCenter();
+			}
+		});
+	}
+
+	public refreshSplitButtons(): void {
+		const state = this.plugin.session.getSplitState(this.leaf);
+
+		if (this.toolbarEl) {
+			this.toolbarEl.querySelectorAll(".mm-split-btn").forEach((el) => {
+				el.removeClass("is-active");
+			});
+			if (state.isActive && state.layout) {
+				const activeBtn = this.toolbarEl.querySelector(
+					`.mm-split-${state.layout}`
+				);
+				activeBtn?.addClass("is-active");
+			}
+		}
+
+		if (this.splitHeaderActionEl) {
+			this.splitHeaderActionEl.toggleClass("is-active", state.isActive);
+			const iconId =
+				state.isActive && state.layout === "top-bottom"
+					? SPLIT_TOP_BOTTOM_ICON_ID
+					: SPLIT_LEFT_RIGHT_ICON_ID;
+			setIcon(this.splitHeaderActionEl, iconId);
+		}
 	}
 
 	public refreshFromSettings(): void {
 		if (!this.mind) return;
 		this.applyCurrentTheme();
 		this.mind.changeCompact(this.plugin.settings.compactMode);
-		// Re-mount if hotkeys changed so keypress bindings update cleanly
-		const currentData = this.mind.getData();
-		void this.mountMindMap(currentData);
+
+		// Only remount canvas when hotkey bindings actually changed, preserving undo stack & viewport
+		const nextHotkeysKey = JSON.stringify(this.plugin.settings.hotkeys);
+		if (nextHotkeysKey !== this.mountedHotkeysKey) {
+			const currentData = this.mind.getData();
+			void this.mountMindMap(currentData);
+		}
 	}
 
 	public commitActiveEdit(): void {
@@ -167,33 +244,11 @@ export class MindMapView extends TextFileView {
 	}
 
 	public openInsertNoteModal(): void {
-		if (!this.mind) return;
-		const selected = this.mind.currentNode;
-		if (!selected) {
-			new Notice("请先在脑图中选中一个节点");
-			return;
-		}
-		new NoteLinkSuggestModal(this.app, (file) => {
-			const linkText = this.inlineEditor.formatNoteLink(file);
-			const currentTopic = selected.nodeObj.topic;
-			const nextTopic = currentTopic ? `${currentTopic} ${linkText}` : linkText;
-			void this.mind?.reshapeNode(selected, { topic: nextTopic });
-		}).open();
+		this.inlineEditor.openInsertNoteModal();
 	}
 
 	public openInsertImageModal(): void {
-		if (!this.mind) return;
-		const selected = this.mind.currentNode;
-		if (!selected) {
-			new Notice("请先在脑图中选中一个节点");
-			return;
-		}
-		new ImageSuggestModal(this.app, (file) => {
-			const embedText = this.inlineEditor.formatMediaEmbed(file);
-			const currentTopic = selected.nodeObj.topic;
-			const nextTopic = currentTopic ? `${currentTopic}\n${embedText}` : embedText;
-			void this.mind?.reshapeNode(selected, { topic: nextTopic });
-		}).open();
+		this.inlineEditor.openInsertImageModal();
 	}
 
 	private destroyMindMap(): void {
@@ -220,7 +275,7 @@ export class MindMapView extends TextFileView {
 
 		const mind = new MindElixir({
 			el: mountEl,
-			direction: directionToCode(this.currentDirection),
+			direction: directionToCode(this.document.direction),
 			editable: true,
 			contextMenu: true,
 			toolBar: false,
@@ -240,6 +295,7 @@ export class MindMapView extends TextFileView {
 			},
 		});
 
+		this.mountedHotkeysKey = JSON.stringify(this.plugin.settings.hotkeys);
 		this.mind = mind;
 		await mind.init(data);
 		this.updateDirectionButtons();
@@ -259,20 +315,27 @@ export class MindMapView extends TextFileView {
 				);
 				return;
 			}
-			this.scheduleSave();
+			this.markLocalEditAndScheduleSave();
 		});
 
 		mind.bus.addListener("changeDirection", (dir) => {
 			if (this.isInternalRefresh) return;
-			this.currentDirection = codeToDirection(dir);
+			this.document.setDirection(codeToDirection(dir));
 			this.updateDirectionButtons();
-			this.scheduleSave();
+			this.markLocalEditAndScheduleSave();
+		});
+
+		mind.bus.addListener("refresh", () => {
+			if (this.isInternalRefresh) return;
+			this.markLocalEditAndScheduleSave();
 		});
 	}
 
-	private scheduleSave(): void {
+	private markLocalEditAndScheduleSave(): void {
 		if (!this.file) return;
+		this.document.markLocalEdit();
 		this.requestSave();
+		this.plugin.session.onMindMapChange(this.file.path);
 	}
 
 	private buildObsidianTheme() {
@@ -378,13 +441,7 @@ export class MindMapView extends TextFileView {
 		);
 		const arrayBuffer = await blob.arrayBuffer();
 		const createdFile = await this.app.vault.createBinary(targetPath, arrayBuffer);
-
-		const selected = this.mind.currentNode;
-		const embedText = this.inlineEditor.formatMediaEmbed(createdFile);
-		const nextTopic = selected.nodeObj.topic
-			? `${selected.nodeObj.topic}\n${embedText}`
-			: embedText;
-		await this.mind.reshapeNode(selected, { topic: nextTopic });
+		await this.inlineEditor.appendImageEmbedToSelectedNode(createdFile);
 		new Notice(`已粘贴图片到节点：${createdFile.name}`);
 	}
 
@@ -482,18 +539,40 @@ export class MindMapView extends TextFileView {
 
 		addDivider();
 
+		// Split view layout controls
+		addBtn(
+			SPLIT_LEFT_RIGHT_ICON_ID,
+			"左右拆分视图（脑图 + 源码）",
+			() => {
+				void this.plugin.session.toggleSplitLayout(this.leaf, "left-right");
+			},
+			"mm-split-btn mm-split-left-right"
+		);
+		addBtn(
+			SPLIT_TOP_BOTTOM_ICON_ID,
+			"上下拆分视图（脑图 + 源码）",
+			() => {
+				void this.plugin.session.toggleSplitLayout(this.leaf, "top-bottom");
+			},
+			"mm-split-btn mm-split-top-bottom"
+		);
+
+		addDivider();
+
 		// Export & Source switch
 		addBtn("download", "导出脑图（可选格式与目录）", () => {
 			this.openExportModal();
 		});
 		addBtn("code-2", "切换到 Markdown 源码模式 (Ctrl+.)", () => {
-			void this.plugin.switchLeafToMarkdown(this.leaf, this.file);
+			if (this.file) {
+				void this.plugin.session.openSourceMode(this.leaf, this.file.path);
+			}
 		});
 	}
 
 	private setLayoutDirection(dir: MindMapDirection): void {
 		if (!this.mind) return;
-		this.currentDirection = dir;
+		this.document.setDirection(dir);
 		switch (dir) {
 			case "left":
 				this.mind.initLeft();
@@ -517,7 +596,9 @@ export class MindMapView extends TextFileView {
 		this.toolbarEl.querySelectorAll(".mm-dir-btn").forEach((el) => {
 			el.removeClass("is-active");
 		});
-		const activeBtn = this.toolbarEl.querySelector(`.mm-dir-${this.currentDirection}`);
+		const activeBtn = this.toolbarEl.querySelector(
+			`.mm-dir-${this.document.direction}`
+		);
 		activeBtn?.addClass("is-active");
 	}
 
@@ -541,13 +622,5 @@ export class MindMapView extends TextFileView {
 				});
 			},
 		}).open();
-	}
-
-	public async exportAsPng(): Promise<void> {
-		this.openExportModal("png");
-	}
-
-	public async exportAsSvg(): Promise<void> {
-		this.openExportModal("svg");
 	}
 }

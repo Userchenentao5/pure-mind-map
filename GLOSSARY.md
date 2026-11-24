@@ -27,3 +27,11 @@ _Avoid_: Raw mode, text view, code mode
 **View-Mode Override**:
 A temporary per-tab exemption that keeps a Mind Map Note in Source Mode until the tab navigates to a different note or switches back to the mind map canvas.
 _Avoid_: Force markdown flag, bypass list
+
+**Split View**:
+A paired dual-pane workspace arrangement showing the mind map canvas alongside Obsidian's native Source Mode editor for the same Mind Map Note (in either left-right or top-bottom layout), with real-time bidirectional synchronization.
+_Avoid_: Dual mode, preview pane, side panel
+
+**Workspace Session**:
+The live coordination state across open Obsidian tabs for Mind Map Notes, uniting View-Mode Overrides, Split View pairings, and bidirectional synchronization between canvas and Source Mode.
+_Avoid_: View manager, sync service, plugin orchestrator

@@ -9,6 +9,7 @@ import {
 	type MarkdownSerializeStyle,
 	type MindMapDirection,
 	type MindMapHotkeys,
+	type SplitLayout,
 	type ThemeMode,
 } from "./types";
 
@@ -51,6 +52,20 @@ export class MindMapSettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.defaultDirection)
 					.onChange(async (value) => {
 						this.plugin.settings.defaultDirection = value as MindMapDirection;
+						await this.plugin.saveSettings();
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("默认拆分视图布局")
+			.setDesc("使用「切换拆分视图」命令同时编辑脑图与源码时的默认分屏方向")
+			.addDropdown((dropdown) =>
+				dropdown
+					.addOption("left-right", "左右拆分 (Left-Right)")
+					.addOption("top-bottom", "上下拆分 (Top-Bottom)")
+					.setValue(this.plugin.settings.defaultSplitLayout)
+					.onChange(async (value) => {
+						this.plugin.settings.defaultSplitLayout = value as SplitLayout;
 						await this.plugin.saveSettings();
 					})
 			);

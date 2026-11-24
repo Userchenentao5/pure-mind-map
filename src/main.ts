@@ -1,5 +1,6 @@
 import {
 	MarkdownView,
+	Menu,
 	Notice,
 	Plugin,
 	TFile,
@@ -7,10 +8,11 @@ import {
 	WorkspaceLeaf,
 	addIcon,
 	normalizePath,
+	setIcon,
 	type ViewState,
 } from "obsidian";
 import { around } from "monkey-around";
-import { allocateUniqueVaultPath } from "./export/exporterCore";
+import { allocateUniqueVaultPath } from "./vault/vaultPaths";
 import {
 	createDefaultMindMapMarkdown,
 	ensureMindMapFrontmatter,
@@ -18,11 +20,12 @@ import {
 	isMindMapFrontmatterValue,
 } from "./parser/markdownParser";
 import {
-	ViewModeRouter,
+	WorkspaceSession,
 	isImePeriodToggleShortcut,
+	type LeafRect,
 	type LeafSnapshot,
 	type ViewStateTarget,
-} from "./routing/ViewModeRouter";
+} from "./session/WorkspaceSession";
 import { MindMapSettingTab } from "./settings/SettingsTab";
 import {
 	DEFAULT_HOTKEYS,
@@ -31,20 +34,26 @@ import {
 	MINDMAP_ICON_ID,
 	MINDMAP_ICON_SVG,
 	MINDMAP_VIEW_TYPE,
+	SPLIT_LEFT_RIGHT_ICON_ID,
+	SPLIT_LEFT_RIGHT_ICON_SVG,
+	SPLIT_TOP_BOTTOM_ICON_ID,
+	SPLIT_TOP_BOTTOM_ICON_SVG,
 	type MindMapSettings,
 } from "./settings/types";
 import { MindMapView } from "./views/MindMapView";
 
 export default class SimpleMindMapPlugin extends Plugin {
 	settings: MindMapSettings = DEFAULT_SETTINGS;
-	private router!: ViewModeRouter<WorkspaceLeaf>;
+	session!: WorkspaceSession<WorkspaceLeaf>;
 	private unpatchSetViewState: (() => void) | null = null;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
 		addIcon(MINDMAP_ICON_ID, MINDMAP_ICON_SVG);
+		addIcon(SPLIT_LEFT_RIGHT_ICON_ID, SPLIT_LEFT_RIGHT_ICON_SVG);
+		addIcon(SPLIT_TOP_BOTTOM_ICON_ID, SPLIT_TOP_BOTTOM_ICON_SVG);
 
-		this.router = this.createViewModeRouter();
+		this.session = this.createWorkspaceSession();
 
 		this.registerView(
 			MINDMAP_VIEW_TYPE,
@@ -59,18 +68,12 @@ export default class SimpleMindMapPlugin extends Plugin {
 		this.installViewStateInterceptor();
 		this.registerCommandsAndMenus();
 		this.registerImePeriodFallback();
-		this.registerMarkdownHeaderToggle();
+		this.registerWorkspaceListeners();
 
 		this.addSettingTab(new MindMapSettingTab(this.app, this));
 
-		// On initial layout ready, switch already-open Mind Map Notes if enabled
 		this.app.workspace.onLayoutReady(() => {
-			this.app.workspace.iterateAllLeaves((leaf) => {
-				const filePath = this.router.shouldAutoOpenOnLayoutReady(leaf);
-				if (filePath) {
-					void this.router.switchToMindMap(leaf, filePath);
-				}
-			});
+			void this.session.restoreOnLayoutReady();
 		});
 	}
 
@@ -79,6 +82,7 @@ export default class SimpleMindMapPlugin extends Plugin {
 			this.unpatchSetViewState();
 			this.unpatchSetViewState = null;
 		}
+		this.session?.dispose();
 		this.removeMarkdownHeaderButtons();
 	}
 
@@ -114,29 +118,61 @@ export default class SimpleMindMapPlugin extends Plugin {
 		);
 	}
 
-	async switchLeafToMarkdown(
-		leaf: WorkspaceLeaf,
-		file: TFile | null
-	): Promise<void> {
-		if (!file) return;
-		await this.router.switchToSourceMode(leaf, file.path);
+	public openSplitViewMenu(leaf: WorkspaceLeaf, evt: MouseEvent): void {
+		const state = this.session.getSplitState(leaf);
+		const menu = new Menu();
+
+		menu.addItem((item) => {
+			item
+				.setTitle("左右拆分视图（脑图 + 源码）")
+				.setIcon(SPLIT_LEFT_RIGHT_ICON_ID)
+				.setChecked(state.isActive && state.layout === "left-right")
+				.onClick(() => {
+					void this.session.openOrSwitchSplit(leaf, "left-right");
+				});
+		});
+
+		menu.addItem((item) => {
+			item
+				.setTitle("上下拆分视图（脑图 + 源码）")
+				.setIcon(SPLIT_TOP_BOTTOM_ICON_ID)
+				.setChecked(state.isActive && state.layout === "top-bottom")
+				.onClick(() => {
+					void this.session.openOrSwitchSplit(leaf, "top-bottom");
+				});
+		});
+
+		if (state.isActive) {
+			menu.addSeparator();
+			menu.addItem((item) => {
+				item
+					.setTitle("关闭拆分视图")
+					.setIcon("x")
+					.onClick(() => {
+						void this.session.closeSplit(leaf);
+					});
+			});
+		}
+
+		menu.showAtMouseEvent(evt);
 	}
 
-	async switchLeafToMindMap(
-		leaf: WorkspaceLeaf,
-		file: TFile | null
-	): Promise<void> {
-		if (!file) return;
-		await this.router.switchToMindMap(leaf, file.path);
-	}
-
-	private createViewModeRouter(): ViewModeRouter<WorkspaceLeaf> {
-		return new ViewModeRouter<WorkspaceLeaf>({
+	private createWorkspaceSession(): WorkspaceSession<WorkspaceLeaf> {
+		return new WorkspaceSession<WorkspaceLeaf>({
 			isAutoOpenEnabled: () => this.settings.autoOpenMindMap,
+			getDefaultSplitLayout: () => this.settings.defaultSplitLayout,
 			isMindMapPath: (filePath) => {
 				const af = this.app.vault.getAbstractFileByPath(filePath);
 				return af instanceof TFile ? this.isMindMapFile(af) : false;
 			},
+			getAllLeaves: () => {
+				const leaves: WorkspaceLeaf[] = [];
+				this.app.workspace.iterateAllLeaves((leaf) => {
+					leaves.push(leaf);
+				});
+				return leaves;
+			},
+			getActiveLeaf: () => this.app.workspace.getMostRecentLeaf(),
 			inspectLeaf: (leaf): LeafSnapshot | null => {
 				if (leaf.view instanceof MindMapView) {
 					return {
@@ -153,14 +189,50 @@ export default class SimpleMindMapPlugin extends Plugin {
 				}
 				return { kind: "other", filePath: null };
 			},
-			prepareForSwitch: async (leaf, currentKind) => {
-				if (currentKind === "mindmap" && leaf.view instanceof MindMapView) {
+			getLeafRect: (leaf): LeafRect | null => {
+				const el = leaf.view?.containerEl;
+				if (!el) return null;
+				const rect = el.getBoundingClientRect();
+				return {
+					left: rect.left,
+					top: rect.top,
+					width: rect.width,
+					height: rect.height,
+				};
+			},
+			commitLeafEdit: (leaf) => {
+				if (leaf.view instanceof MindMapView) {
 					leaf.view.commitActiveEdit();
-					await leaf.view.save();
-				} else if (
-					currentKind === "markdown" &&
-					leaf.view instanceof MarkdownView
+				}
+			},
+			readLeafMarkdown: (leaf) => {
+				if (leaf.view instanceof MindMapView) {
+					return leaf.view.getViewData();
+				}
+				if (leaf.view instanceof MarkdownView) {
+					return leaf.view.getViewData();
+				}
+				return null;
+			},
+			applyMarkdownToMindMapLeaf: (leaf, markdown) => {
+				if (leaf.view instanceof MindMapView) {
+					leaf.view.syncFromExternalMarkdown(markdown);
+				}
+			},
+			applyMarkdownToSourceLeaf: (leaf, markdown) => {
+				if (
+					leaf.view instanceof MarkdownView &&
+					leaf.view.getViewData() !== markdown
 				) {
+					leaf.view.setViewData(markdown, false);
+				}
+			},
+			saveLeaf: async (leaf, onlyIfDirty = false) => {
+				if (leaf.view instanceof MindMapView) {
+					if (!onlyIfDirty || leaf.view.hasPendingLocalEdits()) {
+						await leaf.view.save();
+					}
+				} else if (leaf.view instanceof MarkdownView) {
 					await leaf.view.save();
 				}
 			},
@@ -176,17 +248,36 @@ export default class SimpleMindMapPlugin extends Plugin {
 				} else {
 					await leaf.setViewState({
 						type: MINDMAP_VIEW_TYPE,
+						active: target.active,
 						state: {
 							file: target.filePath,
 						},
 					});
 				}
 			},
+			createSplitLeaf: (originLeaf, direction) =>
+				this.app.workspace.createLeafBySplit(originLeaf, direction, false),
+			detachLeaf: (leaf) => {
+				leaf.detach();
+			},
+			focusLeaf: (leaf) => {
+				this.app.workspace.setActiveLeaf(leaf, { focus: true });
+			},
+			recenterMindMapLeaf: (leaf) => {
+				if (leaf.view instanceof MindMapView) {
+					leaf.view.recenterCanvas();
+				}
+			},
+			refreshUi: () => {
+				this.refreshSplitUi();
+			},
+			scheduleTimer: (fn, delayMs) => window.setTimeout(fn, delayMs),
+			cancelTimer: (handle) => window.clearTimeout(Number(handle)),
 		});
 	}
 
 	private installViewStateInterceptor(): void {
-		const { router } = this;
+		const { session } = this;
 		this.unpatchSetViewState = around(WorkspaceLeaf.prototype, {
 			setViewState(next) {
 				return function (
@@ -198,7 +289,7 @@ export default class SimpleMindMapPlugin extends Plugin {
 						typeof viewState?.state?.file === "string"
 							? viewState.state.file
 							: null;
-					const resolvedType = router.resolveIncomingViewType(
+					const resolvedType = session.resolveIncomingViewType(
 						this,
 						viewState.type,
 						stateFile
@@ -210,6 +301,54 @@ export default class SimpleMindMapPlugin extends Plugin {
 					return Promise.resolve(next.call(this, nextState, eState));
 				};
 			},
+		});
+	}
+
+	private registerWorkspaceListeners(): void {
+		this.registerEvent(
+			this.app.workspace.on("editor-change", (editor, info) => {
+				const filePath = info.file?.path;
+				if (!filePath) return;
+				this.session.onSourceEditorChange(filePath, editor.getValue());
+			})
+		);
+
+		this.registerEvent(
+			this.app.workspace.on("active-leaf-change", (leaf) => {
+				this.session.onActiveLeafChange(leaf);
+			})
+		);
+
+		this.registerEvent(
+			this.app.workspace.on("layout-change", () => {
+				this.session.onLayoutChange();
+			})
+		);
+
+		this.registerEvent(
+			this.app.workspace.on("file-open", () => {
+				this.updateMarkdownHeaderActions(this.app.workspace.getMostRecentLeaf());
+			})
+		);
+
+		this.registerEvent(
+			this.app.metadataCache.on("changed", (file) => {
+				this.app.workspace.iterateAllLeaves((leaf) => {
+					if (leaf.view instanceof MarkdownView && leaf.view.file === file) {
+						this.updateMarkdownHeaderActions(leaf);
+					}
+				});
+			})
+		);
+	}
+
+	private refreshSplitUi(): void {
+		this.app.workspace.iterateAllLeaves((leaf) => {
+			if (leaf.view instanceof MindMapView) {
+				leaf.view.refreshSplitButtons();
+			} else if (leaf.view instanceof MarkdownView) {
+				this.updateMarkdownHeaderActions(leaf);
+			}
 		});
 	}
 
@@ -231,15 +370,7 @@ export default class SimpleMindMapPlugin extends Plugin {
 
 		const createdFile = await this.app.vault.create(filePath, initialContent);
 		const leaf = this.app.workspace.getLeaf(false);
-		this.router.clearOverride(leaf);
-		await leaf.setViewState({
-			type: MINDMAP_VIEW_TYPE,
-			active: true,
-			state: {
-				file: createdFile.path,
-			},
-		});
-		this.app.workspace.setActiveLeaf(leaf, { focus: true });
+		await this.session.openMindMap(leaf, createdFile.path, { focus: true });
 	}
 
 	private resolveNewMindMapFolder(explicitFolder?: TFolder | null): string {
@@ -290,7 +421,7 @@ export default class SimpleMindMapPlugin extends Plugin {
 			);
 			await this.app.vault.modify(activeFile, updated);
 		}
-		await this.switchLeafToMindMap(leaf, activeFile);
+		await this.session.openMindMap(leaf, activeFile.path);
 	}
 
 	private registerCommandsAndMenus(): void {
@@ -311,9 +442,76 @@ export default class SimpleMindMapPlugin extends Plugin {
 			name: "切换脑图视图 / 源码模式 (Toggle Mind Map / Source Mode)",
 			checkCallback: (checking) => {
 				const leaf = this.app.workspace.getMostRecentLeaf();
-				if (!leaf || !this.router.canToggleLeaf(leaf)) return false;
+				if (!leaf || !this.session.canToggleViewMode(leaf)) return false;
 				if (!checking) {
-					void this.router.toggleLeaf(leaf);
+					void this.session.toggleViewMode(leaf);
+				}
+				return true;
+			},
+		});
+
+		this.addCommand({
+			id: "toggle-split-view",
+			name: "切换拆分视图（脑图 + 源码） (Toggle Split View)",
+			checkCallback: (checking) => {
+				const leaf = this.app.workspace.getMostRecentLeaf();
+				if (!leaf || !this.session.canSplit(leaf)) return false;
+				if (!checking) {
+					void this.session.toggleSplit(leaf);
+				}
+				return true;
+			},
+		});
+
+		this.addCommand({
+			id: "split-view-left-right",
+			name: "左右拆分视图（脑图 + 源码） (Split View: Left-Right)",
+			checkCallback: (checking) => {
+				const leaf = this.app.workspace.getMostRecentLeaf();
+				if (!leaf || !this.session.canSplit(leaf)) return false;
+				if (!checking) {
+					void this.session.openOrSwitchSplit(leaf, "left-right");
+				}
+				return true;
+			},
+		});
+
+		this.addCommand({
+			id: "split-view-top-bottom",
+			name: "上下拆分视图（脑图 + 源码） (Split View: Top-Bottom)",
+			checkCallback: (checking) => {
+				const leaf = this.app.workspace.getMostRecentLeaf();
+				if (!leaf || !this.session.canSplit(leaf)) return false;
+				if (!checking) {
+					void this.session.openOrSwitchSplit(leaf, "top-bottom");
+				}
+				return true;
+			},
+		});
+
+		this.addCommand({
+			id: "switch-split-view-layout",
+			name: "切换拆分视图布局（左右 / 上下） (Switch Split View Layout)",
+			checkCallback: (checking) => {
+				const leaf = this.app.workspace.getMostRecentLeaf();
+				if (!leaf || !this.session.canSplit(leaf)) return false;
+				if (!checking) {
+					void this.session.flipSplitLayout(leaf);
+				}
+				return true;
+			},
+		});
+
+		this.addCommand({
+			id: "close-split-view",
+			name: "关闭拆分视图 (Close Split View)",
+			checkCallback: (checking) => {
+				const leaf = this.app.workspace.getMostRecentLeaf();
+				if (!leaf || !this.session.getSplitState(leaf).isActive) {
+					return false;
+				}
+				if (!checking) {
+					void this.session.closeSplit(leaf);
 				}
 				return true;
 			},
@@ -347,7 +545,7 @@ export default class SimpleMindMapPlugin extends Plugin {
 				const view = this.app.workspace.getActiveViewOfType(MindMapView);
 				if (!view) return false;
 				if (!checking) {
-					void view.exportAsPng();
+					view.openExportModal("png");
 				}
 				return true;
 			},
@@ -360,7 +558,7 @@ export default class SimpleMindMapPlugin extends Plugin {
 				const view = this.app.workspace.getActiveViewOfType(MindMapView);
 				if (!view) return false;
 				if (!checking) {
-					void view.exportAsSvg();
+					view.openExportModal("svg");
 				}
 				return true;
 			},
@@ -410,7 +608,7 @@ export default class SimpleMindMapPlugin extends Plugin {
 							.setIcon(MINDMAP_ICON_ID)
 							.onClick(() => {
 								const leaf = this.app.workspace.getLeaf(false);
-								void this.switchLeafToMindMap(leaf, file);
+								void this.session.openMindMap(leaf, file.path);
 							});
 					});
 				}
@@ -426,70 +624,73 @@ export default class SimpleMindMapPlugin extends Plugin {
 				if (!isImePeriodToggleShortcut(evt)) return;
 
 				const leaf = this.app.workspace.getMostRecentLeaf();
-				if (!leaf || !this.router.canToggleLeaf(leaf)) return;
+				if (!leaf || !this.session.canToggleViewMode(leaf)) return;
 
 				evt.preventDefault();
 				if (evt.repeat) return;
 				evt.stopPropagation();
-				void this.router.toggleLeaf(leaf);
+				void this.session.toggleViewMode(leaf);
 			},
 			true
 		);
 	}
 
-	private registerMarkdownHeaderToggle(): void {
-		const updateHeaderButton = (leaf: WorkspaceLeaf | null) => {
-			if (!leaf || !(leaf.view instanceof MarkdownView)) return;
-			const view = leaf.view;
-			const actionsEl = view.containerEl.querySelector(".view-actions");
-			if (!actionsEl) return;
+	private updateMarkdownHeaderActions(leaf: WorkspaceLeaf | null): void {
+		if (!leaf || !(leaf.view instanceof MarkdownView)) return;
+		const view = leaf.view;
+		const actionsEl = view.containerEl.querySelector(".view-actions");
+		if (!actionsEl) return;
 
-			const existing = actionsEl.querySelector(".mm-switch-to-mindmap-action");
-			const shouldShow = this.router.isMarkdownMindMapLeaf(leaf);
+		const existingToggle = actionsEl.querySelector(".mm-switch-to-mindmap-action");
+		const existingSplit = actionsEl.querySelector<HTMLElement>(
+			".mm-split-view-action"
+		);
+		const shouldShow = this.session.isMarkdownMindMapLeaf(leaf);
 
-			if (!shouldShow) {
-				existing?.remove();
-				return;
-			}
+		if (!shouldShow) {
+			existingToggle?.remove();
+			existingSplit?.remove();
+			return;
+		}
 
-			if (!existing) {
-				const actionBtn = view.addAction(
-					MINDMAP_ICON_ID,
-					"切换回脑图视图 (Ctrl+.)",
-					() => {
-						void this.switchLeafToMindMap(leaf, view.file);
+		const splitState = this.session.getSplitState(leaf);
+		const splitIcon =
+			splitState.isActive && splitState.layout === "top-bottom"
+				? SPLIT_TOP_BOTTOM_ICON_ID
+				: SPLIT_LEFT_RIGHT_ICON_ID;
+
+		let splitBtn = existingSplit;
+		if (!splitBtn) {
+			splitBtn = view.addAction(
+				splitIcon,
+				"拆分视图（脑图 + 源码）",
+				(evt) => {
+					this.openSplitViewMenu(leaf, evt);
+				}
+			);
+			splitBtn.addClass("mm-split-view-action");
+		} else {
+			setIcon(splitBtn, splitIcon);
+		}
+		splitBtn.toggleClass("is-active", splitState.isActive);
+
+		if (!existingToggle) {
+			const actionBtn = view.addAction(
+				MINDMAP_ICON_ID,
+				"切换回脑图视图 (Ctrl+.)",
+				() => {
+					if (view.file) {
+						void this.session.openMindMap(leaf, view.file.path);
 					}
-				);
-				actionBtn.addClass("mm-switch-to-mindmap-action");
-			}
-		};
-
-		this.registerEvent(
-			this.app.workspace.on("active-leaf-change", (leaf) => {
-				updateHeaderButton(leaf);
-			})
-		);
-
-		this.registerEvent(
-			this.app.workspace.on("file-open", () => {
-				updateHeaderButton(this.app.workspace.getMostRecentLeaf());
-			})
-		);
-
-		this.registerEvent(
-			this.app.metadataCache.on("changed", (file) => {
-				this.app.workspace.iterateAllLeaves((leaf) => {
-					if (leaf.view instanceof MarkdownView && leaf.view.file === file) {
-						updateHeaderButton(leaf);
-					}
-				});
-			})
-		);
+				}
+			);
+			actionBtn.addClass("mm-switch-to-mindmap-action");
+		}
 	}
 
 	private removeMarkdownHeaderButtons(): void {
 		activeDocument
-			.querySelectorAll(".mm-switch-to-mindmap-action")
+			.querySelectorAll(".mm-switch-to-mindmap-action, .mm-split-view-action")
 			.forEach((el) => el.remove());
 	}
 }
