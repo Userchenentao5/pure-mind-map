@@ -332,6 +332,19 @@ export default class SimpleMindMapPlugin extends Plugin {
 		});
 
 		this.addCommand({
+			id: "export-mind-map",
+			name: "导出当前脑图（选择格式与目录） (Export Mind Map...)",
+			checkCallback: (checking) => {
+				const view = this.app.workspace.getActiveViewOfType(MindMapView);
+				if (!view) return false;
+				if (!checking) {
+					view.openExportModal();
+				}
+				return true;
+			},
+		});
+
+		this.addCommand({
 			id: "export-mind-map-png",
 			name: "导出当前脑图为 PNG 图片 (Export Mind Map as PNG)",
 			checkCallback: (checking) => {

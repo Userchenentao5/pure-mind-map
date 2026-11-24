@@ -24,8 +24,10 @@ import {
 	directionToCode,
 } from "../settings/types";
 import { ImageSuggestModal, NoteLinkSuggestModal } from "../modals/VaultSuggestModals";
+import { ExportMindMapModal } from "../modals/ExportMindMapModal";
 import { NodeInlineEditor } from "../editor/NodeInlineEditor";
 import { MindMapExporter } from "../export/MindMapExporter";
+import type { ExportFormat } from "../export/exporterCore";
 import {
 	buildCanvasKeypressOptions,
 	buildCanvasTheme,
@@ -73,11 +75,8 @@ export class MindMapView extends TextFileView {
 		this.addAction("code-2", "切换到 Markdown 源码模式 (Ctrl+.)", () => {
 			void this.plugin.switchLeafToMarkdown(this.leaf, this.file);
 		});
-		this.addAction("image", "导出为 PNG 图片", () => {
-			void this.exportAsPng();
-		});
-		this.addAction("file-code", "导出为 SVG 图片", () => {
-			void this.exportAsSvg();
+		this.addAction("download", "导出脑图（可选格式与目录）", () => {
+			this.openExportModal();
 		});
 
 		this.toolbarEl = this.contentEl.createDiv({ cls: "mm-floating-toolbar" });
@@ -484,8 +483,8 @@ export class MindMapView extends TextFileView {
 		addDivider();
 
 		// Export & Source switch
-		addBtn("download", "导出为 PNG 图片", () => {
-			void this.exportAsPng();
+		addBtn("download", "导出脑图（可选格式与目录）", () => {
+			this.openExportModal();
 		});
 		addBtn("code-2", "切换到 Markdown 源码模式 (Ctrl+.)", () => {
 			void this.plugin.switchLeafToMarkdown(this.leaf, this.file);
@@ -522,23 +521,33 @@ export class MindMapView extends TextFileView {
 		activeBtn?.addClass("is-active");
 	}
 
-	public async exportAsPng(): Promise<void> {
+	public openExportModal(initialFormat?: ExportFormat): void {
 		if (!this.mind) return;
-		await this.exporter.exportPng({
-			mind: this.mind,
+		const mind = this.mind;
+		new ExportMindMapModal(this.app, {
 			sourceFile: this.file,
-			configuredFolder: this.plugin.settings.exportFolder,
-			scale: this.plugin.settings.exportScale,
-		});
+			defaultFolder: this.plugin.settings.exportFolder,
+			defaultScale: this.plugin.settings.exportScale,
+			initialFormat,
+			onConfirm: async (result) => {
+				await this.exporter.exportMindMap({
+					mind,
+					sourceFile: this.file,
+					format: result.format,
+					destination: result.destination,
+					vaultFolder: result.vaultFolder,
+					fileName: result.fileName,
+					scale: result.scale,
+				});
+			},
+		}).open();
+	}
+
+	public async exportAsPng(): Promise<void> {
+		this.openExportModal("png");
 	}
 
 	public async exportAsSvg(): Promise<void> {
-		if (!this.mind) return;
-		await this.exporter.exportSvg({
-			mind: this.mind,
-			sourceFile: this.file,
-			configuredFolder: this.plugin.settings.exportFolder,
-			scale: this.plugin.settings.exportScale,
-		});
+		this.openExportModal("svg");
 	}
 }

@@ -1,25 +1,49 @@
 import { App, Notice, normalizePath, type TFile } from "obsidian";
 import type MindElixir from "mind-elixir";
-import { exportImageBlob } from "@mind-elixir/export-mindmap";
 import {
+	exportImageBlob,
+	resolveExportBackground,
+} from "@mind-elixir/export-mindmap";
+import {
+	EXPORT_COMPUTED_STYLE_PROPS,
 	allocateUniqueVaultPath,
 	assembleStandaloneSvg,
+	getExportFormatMeta,
 	resolveExportFolder,
-	shouldIncludeExportCssRule,
+	sanitizeExportBaseName,
+	type ExportDestination,
+	type ExportFormat,
 } from "./exporterCore";
 
 export interface ExportRequest {
 	mind: MindElixir;
 	sourceFile: TFile | null;
-	configuredFolder: string;
+	format: ExportFormat;
+	destination: ExportDestination;
+	vaultFolder: string;
+	fileName?: string;
 	scale: number;
 }
 
+interface SaveFilePickerWindow extends Window {
+	showSaveFilePicker?: (options?: {
+		suggestedName?: string;
+		types?: Array<{
+			description?: string;
+			accept: Record<string, string[]>;
+		}>;
+	}) => Promise<{
+		name: string;
+		createWritable: () => Promise<{
+			write: (data: Blob | ArrayBuffer | string) => Promise<void>;
+			close: () => Promise<void>;
+		}>;
+	}>;
+}
+
 /**
- * Deep module owning Mind Map PNG & standalone SVG export:
- * - PNG rasterization via @mind-elixir/export-mindmap
- * - Standalone SVG cloning, image data-URL inlining, stylesheet collection, and safe XML/CDATA assembly
- * - Export folder creation and collision-free vault path allocation
+ * Deep module owning Mind Map multi-format export (PNG, SVG, JPEG, WebP)
+ * to either an Obsidian Vault folder or a user-selected local disk folder.
  */
 export class MindMapExporter {
 	private app: App;
@@ -28,60 +52,68 @@ export class MindMapExporter {
 		this.app = app;
 	}
 
-	public async exportPng(request: ExportRequest): Promise<string | null> {
+	public async exportMindMap(request: ExportRequest): Promise<string | null> {
+		const meta = getExportFormatMeta(request.format);
+		const baseName = sanitizeExportBaseName(
+			request.fileName ?? request.sourceFile?.basename ?? "mind-map"
+		);
+
 		try {
-			new Notice("正在生成 PNG 图片...");
-			const blob = await exportImageBlob(
-				request.mind as unknown as Parameters<typeof exportImageBlob>[0],
-				"png",
-				{
-					scale: request.scale || 2,
-					watermarkEnabled: false,
-				}
-			);
-			const arrayBuffer = await blob.arrayBuffer();
-			const outPath = await this.allocateTargetPath(
+			new Notice(`正在生成 ${meta.format.toUpperCase()} 图片...`);
+			const blob = await this.renderToBlob(request.mind, request.format, request.scale);
+
+			if (request.destination === "local") {
+				return await this.saveToLocalDisk(blob, `${baseName}.${meta.extension}`, meta);
+			}
+
+			return await this.saveToVault(
+				blob,
 				request.sourceFile,
-				request.configuredFolder,
-				"png"
+				request.vaultFolder,
+				baseName,
+				meta.extension,
+				meta.isRaster
 			);
-			await this.app.vault.createBinary(outPath, arrayBuffer);
-			new Notice(`已导出 PNG 到库内：${outPath}`);
-			return outPath;
 		} catch (err) {
-			console.error("[SimpleMindMap] PNG export failed:", err);
+			if (err instanceof DOMException && err.name === "AbortError") {
+				return null;
+			}
+			console.error(`[SimpleMindMap] ${meta.format} export failed:`, err);
 			new Notice(
-				`导出 PNG 失败：${err instanceof Error ? err.message : String(err)}`
+				`导出 ${meta.format.toUpperCase()} 失败：${err instanceof Error ? err.message : String(err)}`
 			);
 			return null;
 		}
 	}
 
-	public async exportSvg(request: ExportRequest): Promise<string | null> {
-		try {
-			new Notice("正在生成 SVG 图片...");
-			const svgContent = await this.buildStandaloneSvg(request.mind);
-			const outPath = await this.allocateTargetPath(
-				request.sourceFile,
-				request.configuredFolder,
-				"svg"
-			);
-			await this.app.vault.create(outPath, svgContent);
-			new Notice(`已导出 SVG 到库内：${outPath}`);
-			return outPath;
-		} catch (err) {
-			console.error("[SimpleMindMap] SVG export failed:", err);
-			new Notice(
-				`导出 SVG 失败：${err instanceof Error ? err.message : String(err)}`
-			);
-			return null;
+	private async renderToBlob(
+		mind: MindElixir,
+		format: ExportFormat,
+		scale: number
+	): Promise<Blob> {
+		if (format === "svg") {
+			const svgContent = await this.buildStandaloneSvg(mind);
+			return new Blob([svgContent], { type: "image/svg+xml;charset=utf-8" });
 		}
+
+		return await exportImageBlob(
+			mind as unknown as Parameters<typeof exportImageBlob>[0],
+			format,
+			{
+				scale: scale || 2,
+				quality: format === "png" ? 1 : 0.92,
+				watermarkEnabled: false,
+			}
+		);
 	}
 
-	private async allocateTargetPath(
+	private async saveToVault(
+		blob: Blob,
 		sourceFile: TFile | null,
 		configuredFolder: string,
-		extension: "png" | "svg"
+		baseName: string,
+		extension: string,
+		isBinary: boolean
 	): Promise<string> {
 		const targetFolder = resolveExportFolder(
 			configuredFolder,
@@ -96,84 +128,188 @@ export class MindMapExporter {
 
 		const { filePath } = allocateUniqueVaultPath({
 			folder: targetFolder,
-			baseName: sourceFile?.basename || "mind-map",
+			baseName,
 			extension,
 			separator: "-",
 			exists: (candidate) =>
 				Boolean(this.app.vault.getAbstractFileByPath(normalizePath(candidate))),
 		});
 
-		return normalizePath(filePath);
+		const normalizedPath = normalizePath(filePath);
+		if (isBinary) {
+			await this.app.vault.createBinary(normalizedPath, await blob.arrayBuffer());
+		} else {
+			await this.app.vault.create(normalizedPath, await blob.text());
+		}
+
+		new Notice(`已导出到库内：${normalizedPath}`);
+		return normalizedPath;
 	}
 
+	private async saveToLocalDisk(
+		blob: Blob,
+		suggestedName: string,
+		meta: { label: string; extension: string; mimeType: string }
+	): Promise<string | null> {
+		const win = window as SaveFilePickerWindow;
+		if (typeof win.showSaveFilePicker === "function") {
+			const handle = await win.showSaveFilePicker({
+				suggestedName,
+				types: [
+					{
+						description: meta.label,
+						accept: { [meta.mimeType]: [`.${meta.extension}`] },
+					},
+				],
+			});
+			const writable = await handle.createWritable();
+			await writable.write(blob);
+			await writable.close();
+			new Notice(`已导出到本地：${handle.name}`);
+			return handle.name;
+		}
+
+		// Fallback when File System Access API is unavailable (e.g. mobile)
+		const url = URL.createObjectURL(blob);
+		try {
+			const link = document.createElement("a");
+			link.href = url;
+			link.download = suggestedName;
+			document.body.appendChild(link);
+			link.click();
+			link.remove();
+			new Notice(`已触发下载：${suggestedName}`);
+			return suggestedName;
+		} finally {
+			window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+		}
+	}
+
+	/**
+	 * Builds a pixel-accurate standalone SVG by cloning mind.nodes and inlining
+	 * every computed CSS property in lockstep (matching @mind-elixir/export-mindmap),
+	 * avoiding broken flex alignment and shifted SVG branch coordinates.
+	 */
 	private async buildStandaloneSvg(mind: MindElixir): Promise<string> {
-		const nodesEl = mind.nodes;
-		const width = Math.max(nodesEl.scrollWidth, nodesEl.offsetWidth, 400) + 80;
-		const height = Math.max(nodesEl.scrollHeight, nodesEl.offsetHeight, 300) + 80;
+		const sourceEl = mind.nodes;
+		const width = Math.max(sourceEl.offsetWidth, sourceEl.scrollWidth, 200);
+		const height = Math.max(sourceEl.offsetHeight, sourceEl.scrollHeight, 150);
+		const bgColor = resolveExportBackground(
+			mind as unknown as Parameters<typeof resolveExportBackground>[0]
+		);
 
-		const clone = nodesEl.cloneNode(true) as HTMLElement;
+		const clone = sourceEl.cloneNode(true) as HTMLElement;
+		this.inlineComputedStylesRecursive(sourceEl, clone);
+
+		// Prevent premature text wrapping on fixed-width nodes inside <foreignObject>
+		const topicNodes = Array.from(clone.querySelectorAll("me-tpc")) as HTMLElement[];
+		for (const tpc of topicNodes) {
+			const w = tpc.style.getPropertyValue("width");
+			const maxW = tpc.style.getPropertyValue("max-width");
+			if (w && w.endsWith("px") && w !== maxW) {
+				tpc.style.setProperty("text-wrap", "nowrap");
+				Array.from(tpc.children).forEach((child) => {
+					if (child instanceof HTMLElement) {
+						child.style.setProperty("text-wrap", "nowrap");
+					}
+				});
+			}
+			// Strip transient selection outlines from exported artwork
+			tpc.style.removeProperty("outline");
+		}
+
 		clone.style.position = "relative";
+		clone.style.top = "0";
+		clone.style.left = "0";
 		clone.style.transform = "none";
-		clone.style.padding = "40px";
+		clone.style.overflow = "visible";
 
-		const imgs = Array.from(clone.querySelectorAll("img"));
+		const host = document.createElement("div");
+		host.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
+		host.style.cssText = [
+			`width:${width}px`,
+			`height:${height}px`,
+			"position:relative",
+			"overflow:visible",
+			`background:${bgColor}`,
+		].join(";");
+		host.appendChild(clone);
+
+		await this.inlineImagesAsDataUrls(host);
+
+		const serializedHostHtml = new XMLSerializer().serializeToString(host);
+		return assembleStandaloneSvg({
+			width,
+			height,
+			bgColor,
+			serializedHostHtml,
+		});
+	}
+
+	private inlineComputedStylesRecursive(source: Element, target: Element): void {
+		if (
+			(source instanceof HTMLElement || source instanceof SVGElement) &&
+			(target instanceof HTMLElement || target instanceof SVGElement)
+		) {
+			const computed = window.getComputedStyle(source);
+			for (const prop of EXPORT_COMPUTED_STYLE_PROPS) {
+				const value = computed.getPropertyValue(prop);
+				if (value) {
+					target.style.setProperty(prop, value, computed.getPropertyPriority(prop));
+				}
+			}
+		}
+
+		const sourceChildren = Array.from(source.children);
+		const targetChildren = Array.from(target.children);
+		for (let i = 0; i < sourceChildren.length; i++) {
+			const srcChild = sourceChildren[i];
+			const dstChild = targetChildren[i];
+			if (!dstChild) continue;
+			// Omit transient editor box or drag previews if present
+			if (
+				srcChild instanceof HTMLElement &&
+				(srcChild.id === "input-box" ||
+					srcChild.classList.contains("insert-preview") ||
+					srcChild.classList.contains("mind-elixir-ghost"))
+			) {
+				dstChild.remove();
+				continue;
+			}
+			this.inlineComputedStylesRecursive(srcChild, dstChild);
+		}
+	}
+
+	private async inlineImagesAsDataUrls(root: HTMLElement): Promise<void> {
+		const imgs = Array.from(root.querySelectorAll("img"));
 		await Promise.all(
 			imgs.map(async (img) => {
+				const src = img.getAttribute("src");
+				if (!src || src.startsWith("data:")) return;
 				try {
-					const dataUrl = await this.imageSrcToDataUrl(img.src);
-					if (dataUrl) img.src = dataUrl;
+					const dataUrl = await this.fetchToDataUrl(src);
+					if (dataUrl) {
+						img.setAttribute("src", dataUrl);
+					}
 				} catch {
 					// Keep original src if conversion fails
 				}
 			})
 		);
-
-		return assembleStandaloneSvg({
-			width,
-			height,
-			bgColor: mind.theme.cssVar["--bgcolor"] || "#ffffff",
-			cssVars: mind.theme.cssVar,
-			collectedCss: this.collectMindElixirStyles(),
-			serializedHtml: new XMLSerializer().serializeToString(clone),
-		});
 	}
 
-	private collectMindElixirStyles(): string {
-		const rules: string[] = [];
-		for (const sheet of Array.from(document.styleSheets)) {
-			try {
-				for (const rule of Array.from(sheet.cssRules)) {
-					if (shouldIncludeExportCssRule(rule.cssText)) {
-						rules.push(rule.cssText);
-					}
-				}
-			} catch {
-				// Ignore cross-origin sheets
-			}
+	private async fetchToDataUrl(src: string): Promise<string | null> {
+		try {
+			const res = await fetch(src);
+			const blob = await res.blob();
+			return await new Promise<string>((resolve, reject) => {
+				const reader = new FileReader();
+				reader.onload = () => resolve(String(reader.result));
+				reader.onerror = reject;
+				reader.readAsDataURL(blob);
+			});
+		} catch {
+			return null;
 		}
-		return rules.join("\n");
-	}
-
-	private imageSrcToDataUrl(src: string): Promise<string | null> {
-		if (!src || src.startsWith("data:")) return Promise.resolve(src);
-		return new Promise((resolve) => {
-			const img = new Image();
-			img.crossOrigin = "anonymous";
-			img.onload = () => {
-				try {
-					const canvas = document.createElement("canvas");
-					canvas.width = img.naturalWidth || img.width;
-					canvas.height = img.naturalHeight || img.height;
-					const ctx = canvas.getContext("2d");
-					if (!ctx) return resolve(null);
-					ctx.drawImage(img, 0, 0);
-					resolve(canvas.toDataURL("image/png"));
-				} catch {
-					resolve(null);
-				}
-			};
-			img.onerror = () => resolve(null);
-			img.src = src;
-		});
 	}
 }

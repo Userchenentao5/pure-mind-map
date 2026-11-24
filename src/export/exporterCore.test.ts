@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+	EXPORT_COMPUTED_STYLE_PROPS,
 	allocateUniqueVaultPath,
 	assembleStandaloneSvg,
-	escapeCdata,
 	escapeXmlAttr,
+	getExportFormatMeta,
 	resolveExportFolder,
-	shouldIncludeExportCssRule,
+	sanitizeExportBaseName,
 } from "./exporterCore";
 
 describe("exporterCore", () => {
@@ -14,6 +15,34 @@ describe("exporterCore", () => {
 		expect(resolveExportFolder("  ", "/Notes/Sub/")).toBe("Notes/Sub");
 		expect(resolveExportFolder("", "")).toBe("");
 		expect(resolveExportFolder("", null)).toBe("");
+	});
+
+	it("sanitizes unsafe filename characters and falls back cleanly", () => {
+		expect(sanitizeExportBaseName('  my:map/2026?*  ')).toBe("my-map-2026-");
+		expect(sanitizeExportBaseName("   ", "fallback")).toBe("fallback");
+	});
+
+	it("returns accurate format metadata for png, svg, jpeg, and webp", () => {
+		expect(getExportFormatMeta("png")).toMatchObject({
+			extension: "png",
+			mimeType: "image/png",
+			isRaster: true,
+		});
+		expect(getExportFormatMeta("svg")).toMatchObject({
+			extension: "svg",
+			mimeType: "image/svg+xml",
+			isRaster: false,
+		});
+		expect(getExportFormatMeta("jpeg")).toMatchObject({
+			extension: "jpg",
+			mimeType: "image/jpeg",
+			isRaster: true,
+		});
+		expect(getExportFormatMeta("webp")).toMatchObject({
+			extension: "webp",
+			mimeType: "image/webp",
+			isRaster: true,
+		});
 	});
 
 	it("allocates collision-free vault paths with configurable separator", () => {
@@ -51,42 +80,27 @@ describe("exporterCore", () => {
 		});
 	});
 
-	it("escapes XML attributes and guards CDATA terminators safely", () => {
+	it("escapes XML attributes and includes critical layout style properties", () => {
 		expect(escapeXmlAttr(`"red" & <blue> 'x'`)).toBe(
 			"&quot;red&quot; &amp; &lt;blue&gt; &apos;x&apos;"
 		);
-		expect(escapeCdata(`.a::after { content: "]]>"; }`)).toBe(
-			`.a::after { content: "]]]]><![CDATA[>"; }`
-		);
+		expect(EXPORT_COMPUTED_STYLE_PROPS).toContain("display");
+		expect(EXPORT_COMPUTED_STYLE_PROPS).toContain("flex-direction");
+		expect(EXPORT_COMPUTED_STYLE_PROPS).toContain("stroke-dasharray");
 	});
 
-	it("filters stylesheet rules relevant to mind-elixir and plugin styles", () => {
-		expect(shouldIncludeExportCssRule(".map-container { color: red; }")).toBe(true);
-		expect(shouldIncludeExportCssRule("me-tpc { padding: 4px; }")).toBe(true);
-		expect(shouldIncludeExportCssRule(".mm-wikilink { color: purple; }")).toBe(true);
-		expect(shouldIncludeExportCssRule(".workspace-leaf { display: flex; }")).toBe(false);
-	});
-
-	it("assembles valid standalone SVG with escaped theme vars and CDATA CSS", () => {
+	it("assembles valid standalone SVG around the computed-style inlined host HTML", () => {
 		const svg = assembleStandaloneSvg({
-			width: 800,
-			height: 600,
+			width: 800.4,
+			height: 600.6,
 			bgColor: "#1e1e1e",
-			cssVars: {
-				"--bgcolor": "#1e1e1e",
-				"--font": `"Inter", sans-serif`,
-				"--empty": undefined,
-			},
-			collectedCss: `.mm-tag { content: "]]>"; }`,
-			serializedHtml: `<div class="nodes">Hello</div>`,
+			serializedHostHtml: `<div xmlns="http://www.w3.org/1999/xhtml">Hello</div>`,
 		});
 
 		expect(svg).toContain(`<?xml version="1.0" encoding="UTF-8"?>`);
-		expect(svg).toContain(`width="800" height="600" viewBox="0 0 800 600"`);
+		expect(svg).toContain(`width="800" height="601" viewBox="0 0 800 601"`);
 		expect(svg).toContain(`fill="#1e1e1e"`);
-		expect(svg).toContain(`--font: &quot;Inter&quot;, sans-serif;`);
-		expect(svg).not.toContain(`--empty`);
-		expect(svg).toContain(`<![CDATA[.mm-tag { content: "]]]]><![CDATA[>"; }]]>`);
-		expect(svg).toContain(`<div class="nodes">Hello</div>`);
+		expect(svg).toContain(`<foreignObject x="0" y="0" width="800" height="601">`);
+		expect(svg).toContain(`<div xmlns="http://www.w3.org/1999/xhtml">Hello</div>`);
 	});
 });
