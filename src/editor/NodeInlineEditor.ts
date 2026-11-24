@@ -109,7 +109,7 @@ export class NodeInlineEditor {
 	}
 
 	public onBeginNodeEdit(mind: MindElixir, nodeId: string): void {
-		const inputBox = mind.nodes.querySelector("#input-box") as HTMLElement | null;
+		const inputBox = mind.nodes.querySelector<HTMLElement>("#input-box");
 		if (!inputBox) return;
 
 		this.activeInputBox = inputBox;
@@ -151,13 +151,12 @@ export class NodeInlineEditor {
 			cur = cur.offsetParent as HTMLElement | null;
 		}
 
-		inputBox.style.left = `${left}px`;
-		inputBox.style.top = `${top}px`;
-		inputBox.style.right = "auto";
-		inputBox.style.margin = "0";
-		inputBox.style.boxSizing = "border-box";
-		inputBox.style.minWidth = `${tpc.offsetWidth}px`;
-		inputBox.style.minHeight = `${tpc.offsetHeight}px`;
+		inputBox.setCssProps({
+			left: `${left}px`,
+			top: `${top}px`,
+			"min-width": `${tpc.offsetWidth}px`,
+			"min-height": `${tpc.offsetHeight}px`,
+		});
 	}
 
 	// --- Right-click text editing menu inside #input-box ---
@@ -462,7 +461,7 @@ export class NodeInlineEditor {
 
 	private renderSuggesterPopup(inputBox: HTMLElement, isEmbed: boolean): void {
 		if (!this.popupEl) {
-			this.popupEl = document.body.createDiv({ cls: "mm-link-suggester" });
+			this.popupEl = activeDocument.body.createDiv({ cls: "mm-link-suggester" });
 			this.popupEl.addEventListener("mousedown", (evt) => {
 				evt.preventDefault();
 			});
@@ -593,7 +592,7 @@ export class NodeInlineEditor {
 		const sel = window.getSelection();
 		if (!sel) return;
 
-		const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+		const walker = activeDocument.createTreeWalker(el, NodeFilter.SHOW_TEXT);
 		let currentNode = walker.nextNode();
 		let offset = 0;
 		let startNode: Node = el;
@@ -629,7 +628,7 @@ export class NodeInlineEditor {
 			endPos = el.childNodes.length;
 		}
 
-		const range = document.createRange();
+		const range = activeDocument.createRange();
 		range.setStart(startNode, startPos);
 		range.setEnd(endNode, endPos);
 		sel.removeAllRanges();

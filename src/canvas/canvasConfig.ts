@@ -10,7 +10,7 @@ export interface CanvasKeypressTarget {
 	currentNode: { nodeObj: { children?: unknown[] } } | null;
 	currentNodes: unknown[];
 	currentSummary: { summaryObj: { id: string } } | null;
-	currentArrow: unknown | null;
+	currentArrow: object | null;
 	addChild(): unknown;
 	insertSibling(type: "before" | "after"): unknown;
 	insertParent(): unknown;

@@ -52,7 +52,7 @@ export default class SimpleMindMapPlugin extends Plugin {
 		);
 
 		this.registerHoverLinkSource(MINDMAP_VIEW_TYPE, {
-			display: "Simple Obsidian Mind Map",
+			display: "Pure Mind Map",
 			defaultMod: false,
 		});
 
@@ -186,31 +186,28 @@ export default class SimpleMindMapPlugin extends Plugin {
 	}
 
 	private installViewStateInterceptor(): void {
-		const plugin = this;
+		const { router } = this;
 		this.unpatchSetViewState = around(WorkspaceLeaf.prototype, {
 			setViewState(next) {
 				return function (
 					this: WorkspaceLeaf,
 					viewState: ViewState,
 					eState?: unknown
-				) {
+				): Promise<void> {
 					const stateFile =
 						typeof viewState?.state?.file === "string"
 							? viewState.state.file
 							: null;
-					const resolvedType = plugin.router.resolveIncomingViewType(
+					const resolvedType = router.resolveIncomingViewType(
 						this,
 						viewState.type,
 						stateFile
 					);
-					if (resolvedType !== viewState.type) {
-						return next.call(
-							this,
-							{ ...viewState, type: resolvedType },
-							eState
-						);
-					}
-					return next.call(this, viewState, eState);
+					const nextState =
+						resolvedType !== viewState.type
+							? { ...viewState, type: resolvedType }
+							: viewState;
+					return Promise.resolve(next.call(this, nextState, eState));
 				};
 			},
 		});
@@ -312,7 +309,6 @@ export default class SimpleMindMapPlugin extends Plugin {
 		this.addCommand({
 			id: "toggle-mind-map-view",
 			name: "切换脑图视图 / 源码模式 (Toggle Mind Map / Source Mode)",
-			hotkeys: [{ modifiers: ["Mod"], key: "." }],
 			checkCallback: (checking) => {
 				const leaf = this.app.workspace.getMostRecentLeaf();
 				if (!leaf || !this.router.canToggleLeaf(leaf)) return false;
@@ -492,7 +488,7 @@ export default class SimpleMindMapPlugin extends Plugin {
 	}
 
 	private removeMarkdownHeaderButtons(): void {
-		document
+		activeDocument
 			.querySelectorAll(".mm-switch-to-mindmap-action")
 			.forEach((el) => el.remove());
 	}

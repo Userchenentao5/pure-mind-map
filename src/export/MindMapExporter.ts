@@ -1,4 +1,4 @@
-import { App, Notice, normalizePath, type TFile } from "obsidian";
+import { App, Notice, normalizePath, requestUrl, type TFile } from "obsidian";
 import type MindElixir from "mind-elixir";
 import {
 	exportImageBlob,
@@ -78,7 +78,7 @@ export class MindMapExporter {
 			if (err instanceof DOMException && err.name === "AbortError") {
 				return null;
 			}
-			console.error(`[SimpleMindMap] ${meta.format} export failed:`, err);
+			console.error(`[PureMindMap] ${meta.format} export failed:`, err);
 			new Notice(
 				`导出 ${meta.format.toUpperCase()} 失败：${err instanceof Error ? err.message : String(err)}`
 			);
@@ -96,15 +96,11 @@ export class MindMapExporter {
 			return new Blob([svgContent], { type: "image/svg+xml;charset=utf-8" });
 		}
 
-		return await exportImageBlob(
-			mind as unknown as Parameters<typeof exportImageBlob>[0],
-			format,
-			{
-				scale: scale || 2,
-				quality: format === "png" ? 1 : 0.92,
-				watermarkEnabled: false,
-			}
-		);
+		return await exportImageBlob(mind, format, {
+			scale: scale || 2,
+			quality: format === "png" ? 1 : 0.92,
+			watermarkEnabled: false,
+		});
 	}
 
 	private async saveToVault(
@@ -172,10 +168,9 @@ export class MindMapExporter {
 		// Fallback when File System Access API is unavailable (e.g. mobile)
 		const url = URL.createObjectURL(blob);
 		try {
-			const link = document.createElement("a");
-			link.href = url;
-			link.download = suggestedName;
-			document.body.appendChild(link);
+			const link = activeDocument.body.createEl("a", {
+				attr: { href: url, download: suggestedName },
+			});
 			link.click();
 			link.remove();
 			new Notice(`已触发下载：${suggestedName}`);
@@ -187,52 +182,54 @@ export class MindMapExporter {
 
 	/**
 	 * Builds a pixel-accurate standalone SVG by cloning mind.nodes and inlining
-	 * every computed CSS property in lockstep (matching @mind-elixir/export-mindmap),
-	 * avoiding broken flex alignment and shifted SVG branch coordinates.
+	 * every computed CSS property in lockstep, preserving flex layout and branch paths.
 	 */
 	private async buildStandaloneSvg(mind: MindElixir): Promise<string> {
 		const sourceEl = mind.nodes;
 		const width = Math.max(sourceEl.offsetWidth, sourceEl.scrollWidth, 200);
 		const height = Math.max(sourceEl.offsetHeight, sourceEl.scrollHeight, 150);
-		const bgColor = resolveExportBackground(
-			mind as unknown as Parameters<typeof resolveExportBackground>[0]
-		);
+		const bgColor = resolveExportBackground(mind);
 
 		const clone = sourceEl.cloneNode(true) as HTMLElement;
 		this.inlineComputedStylesRecursive(sourceEl, clone);
 
 		// Prevent premature text wrapping on fixed-width nodes inside <foreignObject>
-		const topicNodes = Array.from(clone.querySelectorAll("me-tpc")) as HTMLElement[];
+		const nowrapProps: Record<string, string> = { "text-wrap": "nowrap" };
+		const topicNodes = Array.from(clone.querySelectorAll<HTMLElement>("me-tpc"));
 		for (const tpc of topicNodes) {
 			const w = tpc.style.getPropertyValue("width");
 			const maxW = tpc.style.getPropertyValue("max-width");
 			if (w && w.endsWith("px") && w !== maxW) {
-				tpc.style.setProperty("text-wrap", "nowrap");
+				tpc.setCssProps(nowrapProps);
 				Array.from(tpc.children).forEach((child) => {
-					if (child instanceof HTMLElement) {
-						child.style.setProperty("text-wrap", "nowrap");
+					if (child.instanceOf(HTMLElement)) {
+						child.setCssProps(nowrapProps);
 					}
 				});
 			}
-			// Strip transient selection outlines from exported artwork
 			tpc.style.removeProperty("outline");
 		}
 
-		clone.style.position = "relative";
-		clone.style.top = "0";
-		clone.style.left = "0";
-		clone.style.transform = "none";
-		clone.style.overflow = "visible";
+		const cloneResetProps: Record<string, string> = {
+			position: "relative",
+			top: "0",
+			left: "0",
+			transform: "none",
+			overflow: "visible",
+		};
+		clone.setCssProps(cloneResetProps);
 
-		const host = document.createElement("div");
-		host.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
-		host.style.cssText = [
-			`width:${width}px`,
-			`height:${height}px`,
-			"position:relative",
-			"overflow:visible",
-			`background:${bgColor}`,
-		].join(";");
+		const host = createDiv({
+			attr: { xmlns: "http://www.w3.org/1999/xhtml" },
+		});
+		const hostProps: Record<string, string> = {
+			width: `${width}px`,
+			height: `${height}px`,
+			position: "relative",
+			overflow: "visible",
+			background: bgColor,
+		};
+		host.setCssProps(hostProps);
 		host.appendChild(clone);
 
 		await this.inlineImagesAsDataUrls(host);
@@ -248,16 +245,18 @@ export class MindMapExporter {
 
 	private inlineComputedStylesRecursive(source: Element, target: Element): void {
 		if (
-			(source instanceof HTMLElement || source instanceof SVGElement) &&
-			(target instanceof HTMLElement || target instanceof SVGElement)
+			(source.instanceOf(HTMLElement) || source.instanceOf(SVGElement)) &&
+			(target.instanceOf(HTMLElement) || target.instanceOf(SVGElement))
 		) {
 			const computed = window.getComputedStyle(source);
+			const props: Record<string, string> = {};
 			for (const prop of EXPORT_COMPUTED_STYLE_PROPS) {
 				const value = computed.getPropertyValue(prop);
 				if (value) {
-					target.style.setProperty(prop, value, computed.getPropertyPriority(prop));
+					props[prop] = value;
 				}
 			}
+			target.setCssProps(props);
 		}
 
 		const sourceChildren = Array.from(source.children);
@@ -266,9 +265,8 @@ export class MindMapExporter {
 			const srcChild = sourceChildren[i];
 			const dstChild = targetChildren[i];
 			if (!dstChild) continue;
-			// Omit transient editor box or drag previews if present
 			if (
-				srcChild instanceof HTMLElement &&
+				srcChild.instanceOf(HTMLElement) &&
 				(srcChild.id === "input-box" ||
 					srcChild.classList.contains("insert-preview") ||
 					srcChild.classList.contains("mind-elixir-ghost"))
@@ -287,7 +285,7 @@ export class MindMapExporter {
 				const src = img.getAttribute("src");
 				if (!src || src.startsWith("data:")) return;
 				try {
-					const dataUrl = await this.fetchToDataUrl(src);
+					const dataUrl = await this.imageSrcToDataUrl(src);
 					if (dataUrl) {
 						img.setAttribute("src", dataUrl);
 					}
@@ -298,18 +296,46 @@ export class MindMapExporter {
 		);
 	}
 
-	private async fetchToDataUrl(src: string): Promise<string | null> {
-		try {
-			const res = await fetch(src);
-			const blob = await res.blob();
-			return await new Promise<string>((resolve, reject) => {
-				const reader = new FileReader();
-				reader.onload = () => resolve(String(reader.result));
-				reader.onerror = reject;
-				reader.readAsDataURL(blob);
-			});
-		} catch {
-			return null;
+	private async imageSrcToDataUrl(src: string): Promise<string | null> {
+		if (/^https?:\/\//i.test(src)) {
+			try {
+				const res = await requestUrl({ url: src });
+				const contentType = res.headers["content-type"] || "image/png";
+				const blob = new Blob([res.arrayBuffer], { type: contentType });
+				return await this.blobToDataUrl(blob);
+			} catch {
+				return null;
+			}
 		}
+
+		return await new Promise<string | null>((resolve) => {
+			const img = new Image();
+			img.crossOrigin = "anonymous";
+			img.onload = () => {
+				try {
+					const canvas = activeDocument.createElement("canvas");
+					canvas.width = img.naturalWidth || img.width;
+					canvas.height = img.naturalHeight || img.height;
+					const ctx = canvas.getContext("2d");
+					if (!ctx) return resolve(null);
+					ctx.drawImage(img, 0, 0);
+					resolve(canvas.toDataURL("image/png"));
+				} catch {
+					resolve(null);
+				}
+			};
+			img.onerror = () => resolve(null);
+			img.src = src;
+		});
+	}
+
+	private blobToDataUrl(blob: Blob): Promise<string | null> {
+		return new Promise((resolve, reject) => {
+			const reader = new FileReader();
+			reader.onload = () =>
+				resolve(typeof reader.result === "string" ? reader.result : null);
+			reader.onerror = () => reject(reader.error ?? new Error("FileReader failed"));
+			reader.readAsDataURL(blob);
+		});
 	}
 }

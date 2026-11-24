@@ -99,6 +99,8 @@
 
 .mm-mind-elixir-root #input-box {
 	z-index: 50;
+	right: auto !important;
+	margin: 0 !important;
 	box-sizing: border-box;
 	max-width: 380px;
 	white-space: pre-wrap;

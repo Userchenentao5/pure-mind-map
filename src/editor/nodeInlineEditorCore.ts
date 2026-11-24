@@ -45,7 +45,7 @@ export type FuzzyScorer = (query: string) => (text: string) => { score: number }
 export function findLinkTrigger(text: string, caret: number): LinkTriggerMatch | null {
 	const safeCaret = Math.max(0, Math.min(caret, text.length));
 	const before = text.slice(0, safeCaret);
-	const regexMatch = before.match(/(!?)\[\[([^\[\]\n|]*)$/);
+	const regexMatch = before.match(/(!?)\[\[([^[\]\n|]*)$/);
 	if (!regexMatch || regexMatch.index === undefined) {
 		return null;
 	}

@@ -1,51 +1,69 @@
-# Simple Obsidian Mind Map
+# Pure Mind Map
 
-一款基于标准 Markdown 文件的 Obsidian 思维导图插件：新建脑图默认直接以可视化图谱打开并支持实时编辑，一键无损切换至原生 Markdown 源码模式。
+Create and edit interactive mind maps backed by standard Markdown (`.md`) files in Obsidian, with one-click switching between visual mind map editing and native Markdown source mode.
 
-## 核心特性
+[中文说明](#中文说明)
 
-- **标准 `.md` 存储**：通过 Frontmatter（`mindmap-plugin: basic`）标识脑图，底层为标准标题与无序列表语法，天然兼容 Obsidian 双链、反向链接、全文检索与同步。
+## Features
+
+- **Standard Markdown storage**: Mind map notes are plain `.md` files identified by YAML frontmatter (`mindmap-plugin: basic`), using standard headings (`#`, `##`) and nested lists (`-`). Fully compatible with Obsidian backlinks, graph view, search, tags, and sync.
+- **Default mind map view & instant source switch**:
+  - Opening a mind map note automatically launches the interactive mind map canvas (`Tab` for child node, `Enter` for sibling, double-click / `F2` to edit, drag-and-drop reparenting, undo/redo, collapse/expand, and 4 layout directions).
+  - Switch between the mind map canvas and Obsidian's native Markdown editor with one click (header / toolbar button) or via the command **Toggle Mind Map / Source Mode**.
+- **Deep Obsidian integration**:
+  - **Inline `[[wikilink]]` & `![[embed]]` completion**: Type `[[` or `![[` inside any node to search and insert vault notes or images with keyboard navigation.
+  - **Clickable links & hover preview**: Click wikilinks to open notes (`Ctrl/Cmd + Click` in a new tab) and hover for native page previews.
+  - **Rich inline text editing**: Right-click inside an active node editor for links, image embeds, bold/italic/strikethrough/highlight/inline code, and clipboard actions. Paste clipboard images directly onto a selected node (`Ctrl/Cmd + V`).
+  - **Automatic theme sync**: Follows Obsidian's light and dark themes automatically.
+- **Multi-format export**: Export mind maps as **PNG**, **SVG**, **JPEG**, or **WebP** with selectable resolution (`1x`/`2x`/`3x`) to any vault folder or local disk directory.
+
+## Installation
+
+### From Obsidian Community Plugins (once approved)
+1. Open **Settings → Community plugins → Browse**.
+2. Search for **Pure Mind Map**, then click **Install** and **Enable**.
+
+### Early access via BRAT
+1. Install the **BRAT** plugin from Community Plugins.
+2. Open BRAT settings → **Add Beta plugin** and enter `Userchenentao5/simple-obsidian-mind-map`.
+
+### Manual installation
+Download `main.js`, `manifest.json`, and `styles.css` from the latest [GitHub Release](https://github.com/Userchenentao5/simple-obsidian-mind-map/releases) into `<vault>/.obsidian/plugins/pure-mind-map/` and enable **Pure Mind Map** in Obsidian settings.
+
+## Usage Notes
+
+- **View-switch shortcut & Chinese IME**: You can bind a custom hotkey to **Toggle Mind Map / Source Mode** in **Settings → Hotkeys** (e.g., `Alt+M` or `Ctrl+Shift+M`). On Windows with Chinese IME active inside an editable field, `Ctrl+.` may be intercepted by the OS IME for punctuation toggling; prefer `Alt+M` or `Ctrl+Shift+M`, or click the header toggle button.
+- **Converting existing notes**: Run the command **Convert current note to Mind Map** on any existing Markdown note to add the `mindmap-plugin: basic` frontmatter and open it as a mind map.
+
+---
+
+## 中文说明
+
+**Pure Mind Map** 是一款基于标准 Markdown（`.md`）文件的 Obsidian 思维导图插件：新建脑图默认直接以可视化图谱打开并支持实时编辑，可一键无损切换至原生 Markdown 源码模式。
+
+### 核心特性
+
+- **标准 `.md` 存储**：通过 YAML Frontmatter（`mindmap-plugin: basic`）标识脑图，底层采用标准标题与无序列表语法，天然兼容 Obsidian 双链、反向链接、关系图谱、全文检索与同步。
 - **默认图谱编辑 + 一键切源码**：
-  - 打开脑图文件自动进入脑图画布（`Tab` 添加子节点、`Enter` 添加兄弟节点、双击 / `F2` 编辑、拖拽调整层级、撤销重做、折叠展开）。
-  - 点击右上角「源码图标」或执行命令 `切换脑图视图 / 源码模式` 即可切换回 Obsidian 原生 Markdown 编辑器，再次点击标题栏脑图图标即可切回。
+  - 打开脑图文件自动进入脑图画布（`Tab` 添加子节点、`Enter` 添加兄弟节点、双击 / `F2` 编辑、拖拽调整层级、撤销重做、折叠展开、4 种布局方向）。
+  - 点击标题栏/工具栏切换图标，或在命令面板运行 `切换脑图视图 / 源码模式` 即可在脑图与原生 Markdown 编辑器间无感切换。
 - **深度融合 Obsidian 生态**：
-  - 节点内支持 `[[双链笔记]]`、`[[笔记|别名]]` 点击跳转与悬停预览。
-  - 节点内支持 `![[图片.png]]`、`![[图片.png|200]]` 与剪贴板直接粘贴图片到选中节点。
-  - 节点支持加粗、斜体、行内代码、删除线、高亮、标签及外部链接渲染。
-  - 自动跟随 Obsidian 明暗主题。
-- **图片导出**：支持一键导出高清 PNG（1x/2x/3x）与自包含 SVG 图片到 Vault。
-- **自定义快捷键**：支持在插件设置页自定义画布快捷键，并可通过 Obsidian 原生快捷键绑定全局命令。
+  - 节点编辑时输入 `[[` 或 `![[` 实时弹出库内笔记/图片补全浮窗；右键节点文本支持格式设置、插入双链/外链/图片及剪贴板操作。
+  - 支持双链点击跳转与原生悬停预览、剪贴板直接粘贴图片到节点，并自动跟随 Obsidian 明暗主题。
+- **多格式、可选目录导出**：点击下载按钮支持导出为 **PNG / SVG / JPEG / WebP**，可选择保存到库内任意目录或通过系统「另存为」保存到本地磁盘任意文件夹。
 
-## 使用注意点
+### 使用注意点
 
-1. **切换脑图 / 源码快捷键（`Ctrl+.`）与中文输入法冲突**：
-   - 当光标停留在**可编辑区域**（Markdown 源码编辑器中，或脑图节点的文字输入框内）且处于**中文输入法**状态时，Windows 常见中文输入法（微软拼音、搜狗等）会在操作系统层直接拦截 `Ctrl+.` 用于「中/英文标点切换」，导致按键无法传递到 Obsidian。
-   - **规避方式（任选其一）**：
-     - 在 Obsidian「**设置 → 快捷键**」中搜索 `切换脑图视图 / 源码模式`，将其改绑为不与输入法冲突的快捷键（推荐 `Alt+M`、`Ctrl+M` 或 `Ctrl+Shift+M`）；
-     - 切换为英文输入法状态，或先按 `Esc` 退出节点文字编辑后再按 `Ctrl+.`；
-     - 在 Windows 输入法设置中关闭「`Ctrl+.` 切换中英文标点」热键；
-     - 直接点击页面右上角的切换图标完成视图切换。
-2. **文件识别机制**：
-   - 只有 YAML Frontmatter 包含 `mindmap-plugin: basic` 的 `.md` 文件才会默认自动以脑图视图打开；普通 Markdown 笔记可通过命令面板「将当前笔记转为脑图并打开」一键转换。
+1. **视图切换快捷键与中文输入法说明**：可在 Obsidian「**设置 → 快捷键**」中搜索 `切换脑图视图 / 源码模式` 绑定顺手的快捷键（推荐 `Alt+M` 或 `Ctrl+Shift+M`）。若使用 `Ctrl+.`，在 Windows 中文输入法且光标位于源码或节点编辑框内时，系统输入法会先拦截 `Ctrl+.` 用于切换标点，建议改绑其他快捷键或直接点击页面右上角图标切换。
+2. **文件识别机制**：只有 YAML Frontmatter 包含 `mindmap-plugin: basic` 的 `.md` 文件会默认自动以脑图视图打开；普通笔记可通过命令面板「将当前笔记转为脑图并打开」一键转换。
 
-## 开发与本地联调
+### 本地开发与测试
 
-1. 安装依赖：
-   ```bash
-   npm install
-   ```
-2. 配置本地 Obsidian 测试库自动同步（复制 `.env.example` 为 `.env`）：
-   ```env
-   OBSIDIAN_VAULT_PATH=D:\你的Obsidian库路径
-   ```
-   （也可以直接指定 `OBSIDIAN_PLUGIN_DIR` 为目标插件目录。）
-3. 启动监听构建（每次保存自动编译并同步 `main.js`、`styles.css`、`manifest.json` 到测试库）：
-   ```bash
-   npm run dev
-   ```
-4. 生产构建与测试：
-   ```bash
-   npm test
-   npm run build
-   ```
-5. 在 Obsidian 中打开「设置 → 第三方插件」，刷新并启用 **Simple Obsidian Mind Map** 即可体验。
+```bash
+npm install
+npm run lint
+npm test
+npm run build
+```
+
+复制 `.env.example` 为 `.env` 并填写 `OBSIDIAN_VAULT_PATH=<你的库路径>` 后，运行 `npm run dev` 或 `npm run build` 会自动将 `main.js`、`styles.css`、`manifest.json` 同步到 `<vault>/.obsidian/plugins/pure-mind-map/`。
