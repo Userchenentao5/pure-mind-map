@@ -498,7 +498,7 @@ describe("WorkspaceSession", () => {
 		expect(mindLeaf.markdown).toBe("# Edited Inside Inline Box");
 	});
 
-	it("handles non-invasive Ctrl+. inside Split View by switching only the active tab", async () => {
+	it("blocks single-pane view toggling while Split View is active and unlocks after closing split", async () => {
 		const mindLeaf: FakeLeaf = {
 			id: "L1",
 			kind: "mindmap",
@@ -511,6 +511,7 @@ describe("WorkspaceSession", () => {
 			initialLeaves: [mindLeaf],
 		});
 
+		expect(session.canToggleViewMode(mindLeaf)).toBe(true);
 		await session.openOrSwitchSplit(mindLeaf, "left-right");
 		const sourceLeaf = session.getSplitState(mindLeaf).counterpartLeaf;
 		if (!sourceLeaf) {
@@ -518,12 +519,75 @@ describe("WorkspaceSession", () => {
 		}
 		expect(leaves.size).toBe(2);
 
-		// Toggle view mode on MindMap leaf: switches only L1, leaves L2 open
+		// Neither pane can toggle view mode while Split View is active, but split controls stay enabled
+		expect(session.canToggleViewMode(mindLeaf)).toBe(false);
+		expect(session.canToggleViewMode(sourceLeaf)).toBe(false);
+		expect(session.canSplit(mindLeaf)).toBe(true);
+		expect(session.canSplit(sourceLeaf)).toBe(true);
+
+		expect(await session.toggleViewMode(mindLeaf)).toBe(false);
+		expect(await session.toggleViewMode(sourceLeaf)).toBe(false);
+		await session.openSourceMode(mindLeaf, "maps/a.md");
+		await session.openMindMap(sourceLeaf, "maps/a.md");
+
+		expect(mindLeaf.kind).toBe("mindmap");
+		expect(sourceLeaf.kind).toBe("markdown");
+		expect(session.getSplitState(mindLeaf).isActive).toBe(true);
+
+		// Closing Split View re-enables single-pane view toggling
+		expect(await session.closeSplit(mindLeaf)).toBe(true);
+		expect(session.canToggleViewMode(mindLeaf)).toBe(true);
 		expect(await session.toggleViewMode(mindLeaf)).toBe(true);
 		expect(mindLeaf.kind).toBe("markdown");
-		expect(leaves.has(sourceLeaf)).toBe(true);
-		expect(session.getSplitState(mindLeaf).isActive).toBe(false);
-		expect(session.getSplitState(sourceLeaf).isActive).toBe(false);
+	});
+
+	it("swaps Split View pane positions in place while committing edits, swapping overrides, and preserving layout", async () => {
+		const leftLeaf: FakeLeaf = {
+			id: "L1",
+			kind: "mindmap",
+			filePath: "maps/a.md",
+			markdown: "# Initial",
+			dirty: false,
+			pendingInlineEdit: "# Swapped With Inline Edit",
+			rect: { left: 0, top: 0, width: 500, height: 800 },
+		};
+		const rightLeaf: FakeLeaf = {
+			id: "L2",
+			kind: "markdown",
+			filePath: "maps/a.md",
+			markdown: "# Initial",
+			dirty: false,
+			rect: { left: 500, top: 0, width: 500, height: 800 },
+		};
+		const { session, leaves, events } = createWorkspaceHarness({
+			initialLeaves: [leftLeaf, rightLeaf],
+			autoOpen: true,
+		});
+
+		// Swap from the Mind Map pane (L1 -> Source, L2 -> Mind Map)
+		expect(await session.swapSplitPositions(leftLeaf)).toBe(true);
+		expect(leaves.size).toBe(2);
+		expect(events.filter((e) => e.startsWith("detach:"))).toHaveLength(0);
+		expect(leftLeaf.kind).toBe("markdown");
+		expect(rightLeaf.kind).toBe("mindmap");
+		expect(leftLeaf.markdown).toBe("# Swapped With Inline Edit");
+		expect(rightLeaf.markdown).toBe("# Swapped With Inline Edit");
+		expect(session.hasOverrideFor(leftLeaf, "maps/a.md")).toBe(true);
+		expect(session.hasOverrideFor(rightLeaf, "maps/a.md")).toBe(false);
+		expect(session.getSplitState(rightLeaf)).toEqual({
+			isActive: true,
+			layout: "left-right",
+			counterpartLeaf: leftLeaf,
+		});
+		expect(events).toContain("focus:L2");
+		expect(events).toContain("recenter:L2");
+
+		// Swap back from the Source Mode pane (L1 -> Mind Map, L2 -> Source)
+		expect(await session.swapSplitPositions(leftLeaf)).toBe(true);
+		expect(leftLeaf.kind).toBe("mindmap");
+		expect(rightLeaf.kind).toBe("markdown");
+		expect(session.hasOverrideFor(rightLeaf, "maps/a.md")).toBe(true);
+		expect(session.hasOverrideFor(leftLeaf, "maps/a.md")).toBe(false);
 	});
 
 	it("performs debounced bidirectional sync with echo suppression and focus-change flush", async () => {
