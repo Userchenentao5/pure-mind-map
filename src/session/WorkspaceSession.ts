@@ -43,6 +43,7 @@ export interface WorkspaceSessionOptions {
 
 export interface WorkspaceSessionAdapter<TLeaf extends object> {
 	isAutoOpenEnabled(): boolean;
+	isLayoutReady(): boolean;
 	getDefaultSplitLayout(): SplitLayout;
 	isMindMapPath(filePath: string): boolean;
 
@@ -179,13 +180,19 @@ export class WorkspaceSession<TLeaf extends object> {
 
 	/**
 	 * Decides the effective view type when a tab's view state is updated.
-	 * Clears stale View-Mode Overrides when navigating to a different note or entering Mind Map view.
+	 * Skips auto-open hijacking during initial workspace restoration (before layoutReady)
+	 * and preserves deferred Split View Source Mode tabs paired with an open Mind Map pane.
 	 */
 	public resolveIncomingViewType(
 		leaf: TLeaf,
 		incomingType: string,
-		filePath: string | null
+		filePath: string | null,
+		incomingMode?: string | null
 	): string {
+		if (!this.adapter.isLayoutReady()) {
+			return incomingType;
+		}
+
 		if (
 			this.adapter.isAutoOpenEnabled() &&
 			incomingType === "markdown" &&
@@ -194,6 +201,15 @@ export class WorkspaceSession<TLeaf extends object> {
 			const forcedPath = this.overrides.get(leaf);
 			if (forcedPath && forcedPath !== filePath) {
 				this.overrides.delete(leaf);
+			}
+
+			// Preserve Obsidian deferred Split View Source Mode tabs hydrated after layoutReady
+			if (
+				(incomingMode === "source" || incomingMode === "preview") &&
+				this.hasOtherMindMapLeaf(leaf, filePath)
+			) {
+				this.overrides.set(leaf, filePath);
+				return "markdown";
 			}
 
 			if (
@@ -319,12 +335,12 @@ export class WorkspaceSession<TLeaf extends object> {
 			const snap = this.adapter.inspectLeaf(leaf);
 			if (!snap || snap.kind !== "markdown" || !snap.filePath) continue;
 			if (this.overrides.get(leaf) === snap.filePath) continue;
-			if (!this.isMarkdownMindMapLeaf(leaf)) continue;
 
 			if (openMindMapPaths.has(snap.filePath)) {
 				this.overrides.set(leaf, snap.filePath);
 				continue;
 			}
+			if (!this.isMarkdownMindMapLeaf(leaf)) continue;
 			leavesToConvert.push({ leaf, filePath: snap.filePath });
 		}
 
@@ -761,6 +777,17 @@ export class WorkspaceSession<TLeaf extends object> {
 			}
 		}
 		return matches;
+	}
+
+	private hasOtherMindMapLeaf(leaf: TLeaf, filePath: string): boolean {
+		for (const candidate of this.adapter.getAllLeaves()) {
+			if (candidate === leaf) continue;
+			const snap = this.adapter.inspectLeaf(candidate);
+			if (snap?.kind === "mindmap" && snap.filePath === filePath) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private findPrimaryMindMapLeaf(filePath: string): TLeaf | null {
