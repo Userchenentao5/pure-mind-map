@@ -1,4 +1,8 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
+import {
+	formatHotkeyForDisplay,
+	normalizeHotkeyKey,
+} from "../canvas/canvasConfig";
 import type SimpleMindMapPlugin from "../main";
 import {
 	DEFAULT_HOTKEYS,
@@ -186,25 +190,19 @@ export class MindMapSettingTab extends PluginSettingTab {
 		];
 
 		for (const field of hotkeyFields) {
-			const displayVal =
-				this.plugin.settings.hotkeys[field.key] === " "
-					? "Space"
-					: this.plugin.settings.hotkeys[field.key];
+			const displayVal = formatHotkeyForDisplay(
+				this.plugin.settings.hotkeys[field.key]
+			);
 
 			new Setting(containerEl)
 				.setName(field.name)
 				.setDesc(field.desc)
 				.addText((text) =>
 					text
-						.setPlaceholder(
-							DEFAULT_HOTKEYS[field.key] === " "
-								? "Space"
-								: DEFAULT_HOTKEYS[field.key]
-						)
+						.setPlaceholder(formatHotkeyForDisplay(DEFAULT_HOTKEYS[field.key]))
 						.setValue(displayVal)
 						.onChange(async (val) => {
-							const normalized = val.trim() === "Space" ? " " : val.trim();
-							this.plugin.settings.hotkeys[field.key] = normalized;
+							this.plugin.settings.hotkeys[field.key] = normalizeHotkeyKey(val);
 							await this.plugin.saveSettings();
 							this.plugin.refreshOpenMindMaps();
 						})

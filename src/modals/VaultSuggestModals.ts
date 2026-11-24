@@ -1,15 +1,5 @@
 import { App, FuzzySuggestModal, TFile } from "obsidian";
-
-const IMAGE_EXTENSIONS = new Set([
-	"png",
-	"jpg",
-	"jpeg",
-	"gif",
-	"webp",
-	"svg",
-	"bmp",
-	"avif",
-]);
+import { isImageExtension } from "../editor/nodeInlineEditorCore";
 
 export class NoteLinkSuggestModal extends FuzzySuggestModal<TFile> {
 	private onChoose: (file: TFile) => void;
@@ -45,7 +35,7 @@ export class ImageSuggestModal extends FuzzySuggestModal<TFile> {
 	getItems(): TFile[] {
 		return this.app.vault
 			.getFiles()
-			.filter((file) => IMAGE_EXTENSIONS.has(file.extension.toLowerCase()));
+			.filter((file) => isImageExtension(file.extension));
 	}
 
 	getItemText(file: TFile): string {

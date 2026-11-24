@@ -68,10 +68,17 @@ export function extractFrontmatter(markdown: string): FrontmatterResult {
 	return { raw, properties, body };
 }
 
+export function isMindMapFrontmatterValue(value: unknown): boolean {
+	if (value === undefined || value === null || value === false) {
+		return false;
+	}
+	const text = String(value).trim().toLowerCase();
+	return text !== "" && text !== "false";
+}
+
 export function hasMindMapFrontmatter(markdown: string): boolean {
 	const { properties } = extractFrontmatter(markdown);
-	const value = properties[MINDMAP_FRONTMATTER_KEY];
-	return value !== undefined && value !== "" && value.toLowerCase() !== "false";
+	return isMindMapFrontmatterValue(properties[MINDMAP_FRONTMATTER_KEY]);
 }
 
 export function ensureMindMapFrontmatter(

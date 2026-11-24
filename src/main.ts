@@ -10,11 +10,19 @@ import {
 	type ViewState,
 } from "obsidian";
 import { around } from "monkey-around";
+import { allocateUniqueVaultPath } from "./export/exporterCore";
 import {
 	createDefaultMindMapMarkdown,
 	ensureMindMapFrontmatter,
 	hasMindMapFrontmatter,
+	isMindMapFrontmatterValue,
 } from "./parser/markdownParser";
+import {
+	ViewModeRouter,
+	isImePeriodToggleShortcut,
+	type LeafSnapshot,
+	type ViewStateTarget,
+} from "./routing/ViewModeRouter";
 import { MindMapSettingTab } from "./settings/SettingsTab";
 import {
 	DEFAULT_HOTKEYS,
@@ -29,13 +37,14 @@ import { MindMapView } from "./views/MindMapView";
 
 export default class SimpleMindMapPlugin extends Plugin {
 	settings: MindMapSettings = DEFAULT_SETTINGS;
-	private forceMarkdownLeaves = new WeakMap<WorkspaceLeaf, string>();
+	private router!: ViewModeRouter<WorkspaceLeaf>;
 	private unpatchSetViewState: (() => void) | null = null;
-	private isSwitchingView = false;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
 		addIcon(MINDMAP_ICON_ID, MINDMAP_ICON_SVG);
+
+		this.router = this.createViewModeRouter();
 
 		this.registerView(
 			MINDMAP_VIEW_TYPE,
@@ -54,18 +63,12 @@ export default class SimpleMindMapPlugin extends Plugin {
 
 		this.addSettingTab(new MindMapSettingTab(this.app, this));
 
-		// On initial layout ready, switch already-open mind map leaves if enabled
+		// On initial layout ready, switch already-open Mind Map Notes if enabled
 		this.app.workspace.onLayoutReady(() => {
-			if (!this.settings.autoOpenMindMap) return;
 			this.app.workspace.iterateAllLeaves((leaf) => {
-				if (leaf.view instanceof MarkdownView && leaf.view.file) {
-					const file = leaf.view.file;
-					if (
-						this.isMindMapFile(file) &&
-						this.forceMarkdownLeaves.get(leaf) !== file.path
-					) {
-						void this.switchLeafToMindMap(leaf, file);
-					}
+				const filePath = this.router.shouldAutoOpenOnLayoutReady(leaf);
+				if (filePath) {
+					void this.router.switchToMindMap(leaf, filePath);
 				}
 			});
 		});
@@ -106,25 +109,80 @@ export default class SimpleMindMapPlugin extends Plugin {
 	isMindMapFile(file: TFile | null): boolean {
 		if (!file || file.extension !== "md") return false;
 		const cache = this.app.metadataCache.getFileCache(file);
-		const fmValue = cache?.frontmatter?.[MINDMAP_FRONTMATTER_KEY];
-		if (fmValue !== undefined) {
-			return fmValue !== false && String(fmValue).trim() !== "";
-		}
-		return false;
+		return isMindMapFrontmatterValue(
+			cache?.frontmatter?.[MINDMAP_FRONTMATTER_KEY]
+		);
 	}
 
-	private isMindMapMarkdownView(view: MarkdownView): boolean {
-		if (!view.file) return false;
-		if (this.isMindMapFile(view.file)) return true;
-		return typeof view.data === "string" && hasMindMapFrontmatter(view.data);
+	async switchLeafToMarkdown(
+		leaf: WorkspaceLeaf,
+		file: TFile | null
+	): Promise<void> {
+		if (!file) return;
+		await this.router.switchToSourceMode(leaf, file.path);
 	}
 
-	private isMindMapFilePath(filePath: string): boolean {
-		const af = this.app.vault.getAbstractFileByPath(filePath);
-		if (af instanceof TFile) {
-			return this.isMindMapFile(af);
-		}
-		return false;
+	async switchLeafToMindMap(
+		leaf: WorkspaceLeaf,
+		file: TFile | null
+	): Promise<void> {
+		if (!file) return;
+		await this.router.switchToMindMap(leaf, file.path);
+	}
+
+	private createViewModeRouter(): ViewModeRouter<WorkspaceLeaf> {
+		return new ViewModeRouter<WorkspaceLeaf>({
+			isAutoOpenEnabled: () => this.settings.autoOpenMindMap,
+			isMindMapPath: (filePath) => {
+				const af = this.app.vault.getAbstractFileByPath(filePath);
+				return af instanceof TFile ? this.isMindMapFile(af) : false;
+			},
+			inspectLeaf: (leaf): LeafSnapshot | null => {
+				if (leaf.view instanceof MindMapView) {
+					return {
+						kind: "mindmap",
+						filePath: leaf.view.file?.path ?? null,
+					};
+				}
+				if (leaf.view instanceof MarkdownView) {
+					return {
+						kind: "markdown",
+						filePath: leaf.view.file?.path ?? null,
+						rawMarkdown: leaf.view.data,
+					};
+				}
+				return { kind: "other", filePath: null };
+			},
+			prepareForSwitch: async (leaf, currentKind) => {
+				if (currentKind === "mindmap" && leaf.view instanceof MindMapView) {
+					leaf.view.commitActiveEdit();
+					await leaf.view.save();
+				} else if (
+					currentKind === "markdown" &&
+					leaf.view instanceof MarkdownView
+				) {
+					await leaf.view.save();
+				}
+			},
+			applyViewState: async (leaf, target: ViewStateTarget) => {
+				if (target.type === "markdown") {
+					await leaf.setViewState({
+						type: "markdown",
+						state: {
+							file: target.filePath,
+							mode: target.mode,
+						},
+					});
+				} else {
+					await leaf.setViewState({
+						type: MINDMAP_VIEW_TYPE,
+						state: {
+							file: target.filePath,
+						},
+					});
+				}
+			},
+		});
 	}
 
 	private installViewStateInterceptor(): void {
@@ -140,84 +198,22 @@ export default class SimpleMindMapPlugin extends Plugin {
 						typeof viewState?.state?.file === "string"
 							? viewState.state.file
 							: null;
-
-					if (
-						plugin.settings.autoOpenMindMap &&
-						viewState.type === "markdown" &&
+					const resolvedType = plugin.router.resolveIncomingViewType(
+						this,
+						viewState.type,
 						stateFile
-					) {
-						const forcedPath = plugin.forceMarkdownLeaves.get(this);
-						if (forcedPath && forcedPath !== stateFile) {
-							plugin.forceMarkdownLeaves.delete(this);
-						}
-
-						if (
-							plugin.forceMarkdownLeaves.get(this) !== stateFile &&
-							plugin.isMindMapFilePath(stateFile)
-						) {
-							const redirected: ViewState = {
-								...viewState,
-								type: MINDMAP_VIEW_TYPE,
-							};
-							return next.call(this, redirected, eState);
-						}
-					} else if (viewState.type === MINDMAP_VIEW_TYPE) {
-						plugin.forceMarkdownLeaves.delete(this);
+					);
+					if (resolvedType !== viewState.type) {
+						return next.call(
+							this,
+							{ ...viewState, type: resolvedType },
+							eState
+						);
 					}
-
 					return next.call(this, viewState, eState);
 				};
 			},
 		});
-	}
-
-	async switchLeafToMarkdown(
-		leaf: WorkspaceLeaf,
-		file: TFile | null
-	): Promise<void> {
-		if (!file || this.isSwitchingView) return;
-		this.isSwitchingView = true;
-		try {
-			const activeEl = document.activeElement as HTMLElement | null;
-			if (activeEl?.id === "input-box") {
-				activeEl.blur();
-			}
-			if (leaf.view instanceof MindMapView) {
-				await leaf.view.save();
-			}
-			this.forceMarkdownLeaves.set(leaf, file.path);
-			await leaf.setViewState({
-				type: "markdown",
-				state: {
-					file: file.path,
-					mode: "source",
-				},
-			});
-		} finally {
-			this.isSwitchingView = false;
-		}
-	}
-
-	async switchLeafToMindMap(
-		leaf: WorkspaceLeaf,
-		file: TFile | null
-	): Promise<void> {
-		if (!file || this.isSwitchingView) return;
-		this.isSwitchingView = true;
-		try {
-			if (leaf.view instanceof MarkdownView) {
-				await leaf.view.save();
-			}
-			this.forceMarkdownLeaves.delete(leaf);
-			await leaf.setViewState({
-				type: MINDMAP_VIEW_TYPE,
-				state: {
-					file: file.path,
-				},
-			});
-		} finally {
-			this.isSwitchingView = false;
-		}
 	}
 
 	async createNewMindMap(folder?: TFolder | null): Promise<void> {
@@ -238,7 +234,7 @@ export default class SimpleMindMapPlugin extends Plugin {
 
 		const createdFile = await this.app.vault.create(filePath, initialContent);
 		const leaf = this.app.workspace.getLeaf(false);
-		this.forceMarkdownLeaves.delete(leaf);
+		this.router.clearOverride(leaf);
 		await leaf.setViewState({
 			type: MINDMAP_VIEW_TYPE,
 			active: true,
@@ -267,19 +263,18 @@ export default class SimpleMindMapPlugin extends Plugin {
 		filePath: string;
 		title: string;
 	} {
-		const baseTitle = "新建脑图";
-		let index = 0;
-		while (true) {
-			const title = index === 0 ? baseTitle : `${baseTitle} ${index}`;
-			const fileName = `${title}.md`;
-			const candidate = normalizePath(
-				folderPath ? `${folderPath}/${fileName}` : fileName
-			);
-			if (!this.app.vault.getAbstractFileByPath(candidate)) {
-				return { filePath: candidate, title };
-			}
-			index++;
-		}
+		const allocated = allocateUniqueVaultPath({
+			folder: folderPath,
+			baseName: "新建脑图",
+			extension: "md",
+			separator: " ",
+			exists: (candidate) =>
+				Boolean(this.app.vault.getAbstractFileByPath(normalizePath(candidate))),
+		});
+		return {
+			filePath: normalizePath(allocated.filePath),
+			title: allocated.title,
+		};
 	}
 
 	private async convertCurrentNoteToMindMap(): Promise<void> {
@@ -302,12 +297,10 @@ export default class SimpleMindMapPlugin extends Plugin {
 	}
 
 	private registerCommandsAndMenus(): void {
-		// Left sidebar ribbon button
 		this.addRibbonIcon(MINDMAP_ICON_ID, "新建脑图", () => {
 			void this.createNewMindMap();
 		});
 
-		// Command: New mind map
 		this.addCommand({
 			id: "create-new-mind-map",
 			name: "新建脑图 (Create new mind map)",
@@ -316,38 +309,20 @@ export default class SimpleMindMapPlugin extends Plugin {
 			},
 		});
 
-		// Command: Toggle Mind Map / Markdown Source Mode
 		this.addCommand({
 			id: "toggle-mind-map-view",
 			name: "切换脑图视图 / 源码模式 (Toggle Mind Map / Source Mode)",
 			hotkeys: [{ modifiers: ["Mod"], key: "." }],
 			checkCallback: (checking) => {
 				const leaf = this.app.workspace.getMostRecentLeaf();
-				if (!leaf) return false;
-
-				if (leaf.view instanceof MindMapView && leaf.view.file) {
-					if (!checking) {
-						void this.switchLeafToMarkdown(leaf, leaf.view.file);
-					}
-					return true;
+				if (!leaf || !this.router.canToggleLeaf(leaf)) return false;
+				if (!checking) {
+					void this.router.toggleLeaf(leaf);
 				}
-
-				if (
-					leaf.view instanceof MarkdownView &&
-					leaf.view.file &&
-					this.isMindMapMarkdownView(leaf.view)
-				) {
-					if (!checking) {
-						void this.switchLeafToMindMap(leaf, leaf.view.file);
-					}
-					return true;
-				}
-
-				return false;
+				return true;
 			},
 		});
 
-		// Command: Convert existing Markdown note to Mind Map
 		this.addCommand({
 			id: "convert-note-to-mind-map",
 			name: "将当前笔记转为脑图并打开 (Convert current note to Mind Map)",
@@ -356,7 +331,6 @@ export default class SimpleMindMapPlugin extends Plugin {
 			},
 		});
 
-		// Command: Export PNG
 		this.addCommand({
 			id: "export-mind-map-png",
 			name: "导出当前脑图为 PNG 图片 (Export Mind Map as PNG)",
@@ -370,7 +344,6 @@ export default class SimpleMindMapPlugin extends Plugin {
 			},
 		});
 
-		// Command: Export SVG
 		this.addCommand({
 			id: "export-mind-map-svg",
 			name: "导出当前脑图为 SVG 图片 (Export Mind Map as SVG)",
@@ -384,7 +357,6 @@ export default class SimpleMindMapPlugin extends Plugin {
 			},
 		});
 
-		// Command: Insert wikilink into selected node
 		this.addCommand({
 			id: "insert-wikilink-node",
 			name: "在选中节点插入双链笔记 (Insert wikilink into selected node)",
@@ -398,7 +370,6 @@ export default class SimpleMindMapPlugin extends Plugin {
 			},
 		});
 
-		// Command: Insert image into selected node
 		this.addCommand({
 			id: "insert-image-node",
 			name: "在选中节点插入库内图片 (Insert vault image into selected node)",
@@ -412,7 +383,6 @@ export default class SimpleMindMapPlugin extends Plugin {
 			},
 		});
 
-		// File Explorer & More Options context menus
 		this.registerEvent(
 			this.app.workspace.on("file-menu", (menu, file) => {
 				if (file instanceof TFolder) {
@@ -440,46 +410,19 @@ export default class SimpleMindMapPlugin extends Plugin {
 	}
 
 	private registerImePeriodFallback(): void {
-		// In Windows/macOS Chinese IME inside a contenteditable Markdown editor,
-		// pressing Ctrl+. may emit evt.key === "Process" or "。" with evt.code === "Period",
-		// which Obsidian's built-in hotkey matcher (matching evt.key === ".") misses.
 		this.registerDomEvent(
 			window,
 			"keydown",
 			(evt: KeyboardEvent) => {
-				const isModOnly =
-					(evt.ctrlKey || evt.metaKey) && !evt.altKey && !evt.shiftKey;
-				const isPeriod =
-					evt.key === "." || evt.key === "。" || evt.code === "Period";
-				if (!isModOnly || !isPeriod) return;
+				if (!isImePeriodToggleShortcut(evt)) return;
 
 				const leaf = this.app.workspace.getMostRecentLeaf();
-				if (!leaf) return;
+				if (!leaf || !this.router.canToggleLeaf(leaf)) return;
 
-				if (leaf.view instanceof MindMapView && leaf.view.file) {
-					if (evt.repeat) {
-						evt.preventDefault();
-						return;
-					}
-					evt.preventDefault();
-					evt.stopPropagation();
-					void this.switchLeafToMarkdown(leaf, leaf.view.file);
-					return;
-				}
-
-				if (
-					leaf.view instanceof MarkdownView &&
-					leaf.view.file &&
-					this.isMindMapMarkdownView(leaf.view)
-				) {
-					if (evt.repeat) {
-						evt.preventDefault();
-						return;
-					}
-					evt.preventDefault();
-					evt.stopPropagation();
-					void this.switchLeafToMindMap(leaf, leaf.view.file);
-				}
+				evt.preventDefault();
+				if (evt.repeat) return;
+				evt.stopPropagation();
+				void this.router.toggleLeaf(leaf);
 			},
 			true
 		);
@@ -489,19 +432,18 @@ export default class SimpleMindMapPlugin extends Plugin {
 		const updateHeaderButton = (leaf: WorkspaceLeaf | null) => {
 			if (!leaf || !(leaf.view instanceof MarkdownView)) return;
 			const view = leaf.view;
-			const file = view.file;
 			const actionsEl = view.containerEl.querySelector(".view-actions");
 			if (!actionsEl) return;
 
 			const existing = actionsEl.querySelector(".mm-switch-to-mindmap-action");
-			const shouldShow = file ? this.isMindMapFile(file) : false;
+			const shouldShow = this.router.isMarkdownMindMapLeaf(leaf);
 
 			if (!shouldShow) {
 				existing?.remove();
 				return;
 			}
 
-			if (!existing && file) {
+			if (!existing) {
 				const actionBtn = view.addAction(
 					MINDMAP_ICON_ID,
 					"切换回脑图视图 (Ctrl+.)",
