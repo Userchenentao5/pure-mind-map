@@ -3,22 +3,11 @@ import type MindElixir from "mind-elixir";
 import type { Topic } from "mind-elixir";
 import { ImageSuggestModal, NoteLinkSuggestModal } from "../modals/VaultSuggestModals";
 import {
-	cycleSelectionIndex,
-	findLinkTrigger,
-	formatEmbedLink,
-	formatWikiLink,
-	getSuggesterFooterText,
-	rankLinkCandidates,
-	replaceTextRange,
-	wrapExternalLink,
-	wrapTextSelection,
+	NodeInlineEditorSession,
+	type InlineFormatKind,
 	type LinkCandidate,
-	type LinkTriggerMatch,
-} from "./nodeInlineEditorCore";
-
-interface VaultLinkCandidate extends LinkCandidate {
-	file: TFile;
-}
+	type LinkPopupViewModel,
+} from "./NodeInlineEditorSession";
 
 export interface NodeInlineEditorHost {
 	getMind: () => MindElixir | null;
@@ -26,24 +15,21 @@ export interface NodeInlineEditorHost {
 }
 
 /**
- * Deep module owning the Node Inline Editor session:
- * - Pill overlay alignment & underlying node visibility during editing
- * - Caret/selection offset translation & detached-editor recovery
- * - Obsidian-native right-click text editing menu
- * - Floating [[wikilink]] and ![[embed]] Link Suggestion popup
- * - Canonical wikilink & embed formatting
+ * Obsidian/DOM adapter for the Node Inline Editor:
+ * - Aligns MindElixir's #input-box overlay over the edited Node
+ * - Translates DOM Selection offsets and renders the floating Link Suggestion popup
+ * - Wires right-click context menu & vault picker modals into NodeInlineEditorSession
  */
 export class NodeInlineEditor {
 	private app: App;
 	private host: NodeInlineEditorHost;
+	private session: NodeInlineEditorSession<TFile, Topic>;
 	private canvasHostEl: HTMLElement | null = null;
 	private activeInputBox: HTMLElement | null = null;
 	private popupEl: HTMLElement | null = null;
 	private listEl: HTMLElement | null = null;
 	private footerEl: HTMLElement | null = null;
-	private activeMatch: LinkTriggerMatch | null = null;
-	private candidates: VaultLinkCandidate[] = [];
-	private selectedIndex = 0;
+	private lastRenderedCandidates: LinkCandidate<TFile>[] | null = null;
 
 	private readonly onContextMenuBound: (evt: MouseEvent) => void;
 	private readonly onKeyDownBound: (evt: KeyboardEvent) => void;
@@ -51,6 +37,7 @@ export class NodeInlineEditor {
 	constructor(app: App, host: NodeInlineEditorHost) {
 		this.app = app;
 		this.host = host;
+		this.session = this.createSession();
 		this.onContextMenuBound = (evt) => this.handleContextMenu(evt);
 		this.onKeyDownBound = (evt) => this.handleSuggesterKeyDown(evt);
 	}
@@ -63,7 +50,7 @@ export class NodeInlineEditor {
 	}
 
 	public detach(): void {
-		this.closeSuggester();
+		this.session.closeSuggester();
 		if (this.canvasHostEl) {
 			this.canvasHostEl.removeEventListener(
 				"contextmenu",
@@ -77,35 +64,41 @@ export class NodeInlineEditor {
 	}
 
 	public destroy(): void {
-		this.closeSuggester();
+		this.session.closeSuggester();
 		this.activeInputBox = null;
 	}
 
 	public commitActiveEdit(): void {
-		this.closeSuggester();
-		if (this.activeInputBox && this.activeInputBox.isConnected) {
-			this.activeInputBox.blur();
-			this.activeInputBox = null;
+		this.session.commitActiveEdit();
+		this.activeInputBox = null;
+	}
+
+	public openInsertNoteModal(): void {
+		const mind = this.host.getMind();
+		if (!mind) return;
+		if (!mind.currentNode) {
+			new Notice("请先在脑图中选中一个节点");
 			return;
 		}
-		const fallbackBox = this.canvasHostEl?.querySelector(
-			"#input-box"
-		) as HTMLElement | null;
-		if (fallbackBox) {
-			fallbackBox.blur();
+		new NoteLinkSuggestModal(this.app, (file) => {
+			void this.session.appendFileToSelectedNode(file, false);
+		}).open();
+	}
+
+	public openInsertImageModal(): void {
+		const mind = this.host.getMind();
+		if (!mind) return;
+		if (!mind.currentNode) {
+			new Notice("请先在脑图中选中一个节点");
+			return;
 		}
+		new ImageSuggestModal(this.app, (file) => {
+			void this.session.appendFileToSelectedNode(file, true);
+		}).open();
 	}
 
-	public formatNoteLink(file: TFile): string {
-		const generated = this.app.fileManager.generateMarkdownLink(
-			file,
-			this.host.getSourcePath()
-		);
-		return formatWikiLink(generated, file.basename);
-	}
-
-	public formatMediaEmbed(file: TFile): string {
-		return formatEmbedLink(file.name, file.basename, file.extension);
+	public async appendImageEmbedToSelectedNode(file: TFile): Promise<boolean> {
+		return this.session.appendFileToSelectedNode(file, true);
 	}
 
 	public onBeginNodeEdit(mind: MindElixir, nodeId: string): void {
@@ -137,6 +130,91 @@ export class NodeInlineEditor {
 		this.bindSuggesterToInput(inputBox);
 	}
 
+	private createSession(): NodeInlineEditorSession<TFile, Topic> {
+		return new NodeInlineEditorSession<TFile, Topic>({
+			listVaultCandidates: () =>
+				this.app.vault.getFiles().map((file) => ({
+					file,
+					path: file.path,
+					basename: file.basename,
+					name: file.name,
+					extension: file.extension,
+					folderPath:
+						file.parent && !file.parent.isRoot() ? `${file.parent.path}/` : "",
+					mtime: file.stat.mtime,
+				})),
+			createFuzzyScorer: (query) => prepareFuzzySearch(query),
+			generateMarkdownLink: (file) =>
+				this.app.fileManager.generateMarkdownLink(
+					file,
+					this.host.getSourcePath()
+				),
+			getFileMeta: (file) => ({
+				name: file.name,
+				basename: file.basename,
+				extension: file.extension,
+			}),
+			readInputBox: () => {
+				const inputBox = this.activeInputBox;
+				if (!inputBox) return null;
+				return {
+					connected: inputBox.isConnected,
+					text: inputBox.textContent ?? "",
+					selection: this.getSelectionOffsets(inputBox),
+				};
+			},
+			writeInputBox: (text, selection, keepEditing) => {
+				const inputBox = this.activeInputBox;
+				if (!inputBox || !inputBox.isConnected) return;
+				inputBox.textContent = text;
+				if (keepEditing) {
+					inputBox.focus();
+					this.setSelectionOffsets(inputBox, selection.start, selection.end);
+				} else {
+					inputBox.blur();
+				}
+			},
+			blurInputBox: () => {
+				if (this.activeInputBox && this.activeInputBox.isConnected) {
+					this.activeInputBox.blur();
+					return;
+				}
+				const fallbackBox =
+					this.canvasHostEl?.querySelector<HTMLElement>("#input-box");
+				fallbackBox?.blur();
+			},
+			renderSuggester: (state) => {
+				this.renderSuggesterState(state);
+			},
+			getSelectedNode: () => {
+				const selected = this.host.getMind()?.currentNode ?? null;
+				if (!selected) return null;
+				return {
+					node: selected,
+					topic: selected.nodeObj.topic,
+				};
+			},
+			reshapeNodeTopic: async (node, topic) => {
+				const mind = this.host.getMind();
+				if (!mind) return;
+				await mind.reshapeNode(node, { topic });
+			},
+			reopenNodeEditor: async (node, text, selection) => {
+				const mind = this.host.getMind();
+				if (!mind) return;
+				await mind.beginEdit(node);
+				const reopened =
+					this.canvasHostEl?.querySelector<HTMLElement>("#input-box");
+				if (reopened) {
+					this.activeInputBox = reopened;
+					reopened.textContent = text;
+					reopened.focus();
+					this.setSelectionOffsets(reopened, selection.start, selection.end);
+				}
+			},
+		});
+	}
+
 	private alignInputBoxOverNode(
 		mind: MindElixir,
 		tpc: HTMLElement,
@@ -159,36 +237,20 @@ export class NodeInlineEditor {
 		});
 	}
 
-	// --- Right-click text editing menu inside #input-box ---
-
 	private handleContextMenu(evt: MouseEvent): void {
 		const target = evt.target as HTMLElement | null;
-		const inputBox = target?.closest("#input-box") as HTMLElement | null;
+		const inputBox = target?.closest<HTMLElement>("#input-box") ?? null;
 		if (!inputBox) return;
 
 		evt.preventDefault();
 		evt.stopPropagation();
 
-		const mind = this.host.getMind();
-		const editingNode = mind?.currentNode ?? null;
+		this.activeInputBox = inputBox;
+		const editingNode = this.host.getMind()?.currentNode ?? null;
 		const fullText = inputBox.textContent ?? "";
-		const { start, end } = this.getSelectionOffsets(inputBox);
-		const selectedText = fullText.slice(start, end);
-		const hasSelection = end > start;
-
-		const commitEditResult = async (
-			result: { text: string; caretStart: number; caretEnd: number },
-			keepEditing = true
-		) => {
-			await this.applyInputBoxText(
-				inputBox,
-				editingNode,
-				result.text,
-				result.caretStart,
-				result.caretEnd,
-				keepEditing
-			);
-		};
+		const selection = this.getSelectionOffsets(inputBox);
+		const selectedText = fullText.slice(selection.start, selection.end);
+		const hasSelection = selection.end > selection.start;
 
 		const menu = new Menu();
 
@@ -198,9 +260,11 @@ export class NodeInlineEditor {
 				.setIcon("link")
 				.onClick(() => {
 					new NoteLinkSuggestModal(this.app, (file) => {
-						const linkText = this.formatNoteLink(file);
-						void commitEditResult(
-							replaceTextRange(fullText, start, end, linkText),
+						void this.session.insertFileIntoSelection(
+							editingNode,
+							fullText,
+							selection,
+							file,
 							false
 						);
 					}).open();
@@ -212,7 +276,12 @@ export class NodeInlineEditor {
 				.setTitle("新增外部链接")
 				.setIcon("external-link")
 				.onClick(() => {
-					void commitEditResult(wrapExternalLink(fullText, start, end));
+					void this.session.applyInlineFormat(
+						editingNode,
+						fullText,
+						selection,
+						"external-link"
+					);
 				})
 		);
 
@@ -222,10 +291,12 @@ export class NodeInlineEditor {
 				.setIcon("image-plus")
 				.onClick(() => {
 					new ImageSuggestModal(this.app, (file) => {
-						const embedText = this.formatMediaEmbed(file);
-						void commitEditResult(
-							replaceTextRange(fullText, start, end, embedText),
-							false
+						void this.session.insertFileIntoSelection(
+							editingNode,
+							fullText,
+							selection,
+							file,
+							true
 						);
 					}).open();
 				})
@@ -236,15 +307,13 @@ export class NodeInlineEditor {
 		const formatItems: Array<{
 			title: string;
 			icon: string;
-			prefix: string;
-			suffix: string;
-			placeholder: string;
+			kind: InlineFormatKind;
 		}> = [
-			{ title: "加粗", icon: "bold", prefix: "**", suffix: "**", placeholder: "加粗文本" },
-			{ title: "斜体", icon: "italic", prefix: "*", suffix: "*", placeholder: "斜体文本" },
-			{ title: "删除线", icon: "strikethrough", prefix: "~~", suffix: "~~", placeholder: "删除文本" },
-			{ title: "高亮", icon: "highlighter", prefix: "==", suffix: "==", placeholder: "高亮文本" },
-			{ title: "行内代码", icon: "code", prefix: "`", suffix: "`", placeholder: "code" },
+			{ title: "加粗", icon: "bold", kind: "bold" },
+			{ title: "斜体", icon: "italic", kind: "italic" },
+			{ title: "删除线", icon: "strikethrough", kind: "strikethrough" },
+			{ title: "高亮", icon: "highlighter", kind: "highlight" },
+			{ title: "行内代码", icon: "code", kind: "code" },
 		];
 
 		for (const fmt of formatItems) {
@@ -253,15 +322,11 @@ export class NodeInlineEditor {
 					.setTitle(fmt.title)
 					.setIcon(fmt.icon)
 					.onClick(() => {
-						void commitEditResult(
-							wrapTextSelection(
-								fullText,
-								start,
-								end,
-								fmt.prefix,
-								fmt.suffix,
-								fmt.placeholder
-							)
+						void this.session.applyInlineFormat(
+							editingNode,
+							fullText,
+							selection,
+							fmt.kind
 						);
 					})
 			);
@@ -277,7 +342,12 @@ export class NodeInlineEditor {
 				.onClick(async () => {
 					if (!hasSelection) return;
 					await navigator.clipboard.writeText(selectedText);
-					await commitEditResult(replaceTextRange(fullText, start, end, ""));
+					await this.session.replaceSelectionText(
+						editingNode,
+						fullText,
+						selection,
+						""
+					);
 				})
 		);
 
@@ -289,14 +359,7 @@ export class NodeInlineEditor {
 				.onClick(async () => {
 					if (!hasSelection) return;
 					await navigator.clipboard.writeText(selectedText);
-					await this.applyInputBoxText(
-						inputBox,
-						editingNode,
-						fullText,
-						start,
-						end,
-						true
-					);
+					await this.session.restoreSelection(editingNode, fullText, selection);
 				})
 		);
 
@@ -308,8 +371,11 @@ export class NodeInlineEditor {
 					try {
 						const clipText = await navigator.clipboard.readText();
 						if (clipText) {
-							await commitEditResult(
-								replaceTextRange(fullText, start, end, clipText)
+							await this.session.replaceSelectionText(
+								editingNode,
+								fullText,
+								selection,
+								clipText
 							);
 						}
 					} catch {
@@ -323,28 +389,18 @@ export class NodeInlineEditor {
 				.setTitle("全选")
 				.setIcon("text-select")
 				.onClick(async () => {
-					await this.applyInputBoxText(
-						inputBox,
-						editingNode,
-						fullText,
-						0,
-						fullText.length,
-						true
-					);
+					await this.session.restoreSelection(editingNode, fullText, {
+						start: 0,
+						end: fullText.length,
+					});
 				})
 		);
 
 		menu.showAtMouseEvent(evt);
 	}
 
-	// --- Inline [[wikilink]] / ![[embed]] Link Suggestion popup ---
-
-	private isSuggesterOpen(): boolean {
-		return this.popupEl !== null && this.candidates.length > 0;
-	}
-
 	private bindSuggesterToInput(inputBox: HTMLElement): void {
-		const refresh = () => this.updateSuggesterFromInput(inputBox);
+		const refresh = () => this.session.refreshSuggester();
 		inputBox.addEventListener("input", refresh);
 		inputBox.addEventListener("keyup", (evt) => {
 			if (
@@ -362,7 +418,7 @@ export class NodeInlineEditor {
 		inputBox.addEventListener(
 			"blur",
 			() => {
-				this.closeSuggester();
+				this.session.onInputBlur();
 				if (this.activeInputBox === inputBox) {
 					this.activeInputBox = null;
 				}
@@ -374,92 +430,22 @@ export class NodeInlineEditor {
 	}
 
 	private handleSuggesterKeyDown(evt: KeyboardEvent): void {
-		if (!this.isSuggesterOpen()) return;
-
-		if (evt.key === "ArrowDown") {
+		const action = this.session.handleSuggesterKeyDown({
+			key: evt.key,
+			isComposing: evt.isComposing,
+		});
+		if (action === "handled") {
 			evt.preventDefault();
 			evt.stopPropagation();
-			this.selectedIndex = cycleSelectionIndex(
-				this.selectedIndex,
-				this.candidates.length,
-				1
-			);
-			this.renderSuggesterSelection();
-			return;
-		}
-
-		if (evt.key === "ArrowUp") {
-			evt.preventDefault();
-			evt.stopPropagation();
-			this.selectedIndex = cycleSelectionIndex(
-				this.selectedIndex,
-				this.candidates.length,
-				-1
-			);
-			this.renderSuggesterSelection();
-			return;
-		}
-
-		if (evt.key === "Enter" || evt.key === "Tab") {
-			if (evt.isComposing) return;
-			evt.preventDefault();
-			evt.stopPropagation();
-			const chosen = this.candidates[this.selectedIndex];
-			if (chosen) {
-				this.commitSuggesterChoice(chosen.file);
-			}
-			return;
-		}
-
-		if (evt.key === "Escape") {
-			evt.preventDefault();
-			evt.stopPropagation();
-			this.closeSuggester();
 		}
 	}
 
-	private updateSuggesterFromInput(inputBox: HTMLElement): void {
-		if (!inputBox.isConnected) {
-			this.closeSuggester();
+	private renderSuggesterState(state: LinkPopupViewModel<TFile>): void {
+		if (!state.isOpen || !this.activeInputBox || !this.activeInputBox.isConnected) {
+			this.destroyPopupDom();
 			return;
 		}
 
-		const text = inputBox.textContent ?? "";
-		const { start: caret } = this.getSelectionOffsets(inputBox);
-		const match = findLinkTrigger(text, caret);
-		if (!match) {
-			this.closeSuggester();
-			return;
-		}
-
-		const allFiles: VaultLinkCandidate[] = this.app.vault.getFiles().map((file) => ({
-			file,
-			path: file.path,
-			basename: file.basename,
-			name: file.name,
-			extension: file.extension,
-			folderPath: file.parent && !file.parent.isRoot() ? `${file.parent.path}/` : "",
-			mtime: file.stat.mtime,
-		}));
-
-		const ranked = rankLinkCandidates(
-			allFiles,
-			match.query,
-			match.isEmbed,
-			(q) => prepareFuzzySearch(q)
-		);
-		if (ranked.length === 0) {
-			this.closeSuggester();
-			return;
-		}
-
-		this.activeMatch = match;
-		this.candidates = ranked;
-		this.selectedIndex = Math.min(this.selectedIndex, ranked.length - 1);
-		this.renderSuggesterPopup(inputBox, match.isEmbed);
-	}
-
-	private renderSuggesterPopup(inputBox: HTMLElement, isEmbed: boolean): void {
 		if (!this.popupEl) {
 			this.popupEl = activeDocument.body.createDiv({ cls: "mm-link-suggester" });
 			this.popupEl.addEventListener("mousedown", (evt) => {
@@ -470,15 +456,23 @@ export class NodeInlineEditor {
 		}
 
 		if (this.footerEl) {
-			this.footerEl.setText(getSuggesterFooterText(isEmbed));
+			this.footerEl.setText(state.footerText);
 		}
 
-		if (!this.listEl) return;
-		this.listEl.empty();
+		const listEl = this.listEl;
+		if (!listEl) return;
 
-		this.candidates.forEach((candidate, index) => {
-			const row = this.listEl!.createDiv({
-				cls: `mm-link-suggester-item${index === this.selectedIndex ? " is-selected" : ""}`,
+		if (this.lastRenderedCandidates === state.candidates) {
+			this.updatePopupSelection(state.selectedIndex);
+			return;
+		}
+
+		this.lastRenderedCandidates = state.candidates;
+		listEl.empty();
+
+		state.candidates.forEach((candidate, index) => {
+			const row = listEl.createDiv({
+				cls: `mm-link-suggester-item${index === state.selectedIndex ? " is-selected" : ""}`,
 			});
 			const titleEl = row.createDiv({ cls: "mm-link-suggester-title" });
 			titleEl.setText(
@@ -491,35 +485,37 @@ export class NodeInlineEditor {
 			}
 
 			row.addEventListener("mouseenter", () => {
-				this.selectedIndex = index;
-				this.renderSuggesterSelection();
+				this.session.hoverSuggesterIndex(index);
 			});
 			row.addEventListener("mousedown", (evt) => {
 				evt.preventDefault();
 				evt.stopPropagation();
-				this.commitSuggesterChoice(candidate.file);
+				this.session.chooseSuggesterIndex(index);
 			});
 		});
 
-		this.positionSuggesterPopup(inputBox);
+		this.positionSuggesterPopup(this.activeInputBox, state.candidates.length);
 	}
 
-	private renderSuggesterSelection(): void {
+	private updatePopupSelection(selectedIndex: number): void {
 		if (!this.listEl) return;
 		const rows = Array.from(this.listEl.children) as HTMLElement[];
 		rows.forEach((row, idx) => {
-			row.toggleClass("is-selected", idx === this.selectedIndex);
-			if (idx === this.selectedIndex) {
+			row.toggleClass("is-selected", idx === selectedIndex);
+			if (idx === selectedIndex) {
 				row.scrollIntoView({ block: "nearest" });
 			}
 		});
 	}
 
-	private positionSuggesterPopup(inputBox: HTMLElement): void {
+	private positionSuggesterPopup(
+		inputBox: HTMLElement,
+		candidateCount: number
+	): void {
 		if (!this.popupEl) return;
 		const rect = inputBox.getBoundingClientRect();
 		const popupWidth = 320;
-		const estimatedHeight = Math.min(340, this.candidates.length * 46 + 40);
+		const estimatedHeight = Math.min(340, candidateCount * 46 + 40);
 
 		let left = rect.left;
 		if (left + popupWidth > window.innerWidth - 12) {
@@ -536,39 +532,15 @@ export class NodeInlineEditor {
 		this.popupEl.style.width = `${popupWidth}px`;
 	}
 
-	private commitSuggesterChoice(file: TFile): void {
-		const inputBox = this.activeInputBox;
-		const match = this.activeMatch;
-		if (!inputBox || !inputBox.isConnected || !match) {
-			this.closeSuggester();
-			return;
-		}
-
-		const linkText = match.isEmbed
-			? this.formatMediaEmbed(file)
-			: this.formatNoteLink(file);
-		const fullText = inputBox.textContent ?? "";
-		const edited = replaceTextRange(fullText, match.start, match.end, linkText);
-
-		inputBox.textContent = edited.text;
-		inputBox.focus();
-		this.setSelectionOffsets(inputBox, edited.caretStart, edited.caretEnd);
-		this.closeSuggester();
-	}
-
-	private closeSuggester(): void {
+	private destroyPopupDom(): void {
 		if (this.popupEl) {
 			this.popupEl.remove();
 			this.popupEl = null;
 			this.listEl = null;
 			this.footerEl = null;
 		}
-		this.activeMatch = null;
-		this.candidates = [];
-		this.selectedIndex = 0;
+		this.lastRenderedCandidates = null;
 	}
-
-	// --- Caret / selection DOM helpers & detached-editor recovery ---
 
 	private getSelectionOffsets(el: HTMLElement): { start: number; end: number } {
 		const textLen = (el.textContent ?? "").length;
@@ -633,42 +605,5 @@ export class NodeInlineEditor {
 		range.setEnd(endNode, endPos);
 		sel.removeAllRanges();
 		sel.addRange(range);
-	}
-
-	private async applyInputBoxText(
-		inputBox: HTMLElement,
-		editingNode: Topic | null,
-		nextText: string,
-		caretStart: number,
-		caretEnd: number,
-		keepEditing: boolean
-	): Promise<void> {
-		if (inputBox.isConnected) {
-			inputBox.textContent = nextText;
-			if (keepEditing) {
-				inputBox.focus();
-				this.setSelectionOffsets(inputBox, caretStart, caretEnd);
-			} else {
-				inputBox.blur();
-			}
-			return;
-		}
-
-		const mind = this.host.getMind();
-		if (!mind || !editingNode) return;
-		if (nextText.trim() !== "") {
-			await mind.reshapeNode(editingNode, { topic: nextText });
-		}
-		if (keepEditing) {
-			await mind.beginEdit(editingNode);
-			const reopened = this.canvasHostEl?.querySelector(
-				"#input-box"
-			) as HTMLElement | null;
-			if (reopened) {
-				reopened.textContent = nextText;
-				reopened.focus();
-				this.setSelectionOffsets(reopened, caretStart, caretEnd);
-			}
-		}
 	}
 }

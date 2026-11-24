@@ -1,5 +1,5 @@
 import { App, FuzzySuggestModal, TFile } from "obsidian";
-import { isImageExtension } from "../editor/nodeInlineEditorCore";
+import { isImageExtension } from "../editor/NodeInlineEditorSession";
 
 export class NoteLinkSuggestModal extends FuzzySuggestModal<TFile> {
 	private onChoose: (file: TFile) => void;
