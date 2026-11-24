@@ -55,6 +55,10 @@
 	color: var(--interactive-accent);
 }
 
+.mm-is-hidden {
+	display: none !important;
+}
+
 .mm-toolbar-btn {
 	display: inline-flex;
 	align-items: center;

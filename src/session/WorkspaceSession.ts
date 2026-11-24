@@ -239,7 +239,7 @@ export class WorkspaceSession<TLeaf extends object> {
 		);
 	}
 
-	public canToggleViewMode(leaf: TLeaf): boolean {
+	private isMindMapNoteLeaf(leaf: TLeaf): boolean {
 		const snap = this.adapter.inspectLeaf(leaf);
 		if (!snap || !snap.filePath) return false;
 		if (snap.kind === "mindmap") return true;
@@ -247,7 +247,13 @@ export class WorkspaceSession<TLeaf extends object> {
 		return false;
 	}
 
+	public canToggleViewMode(leaf: TLeaf): boolean {
+		if (!this.isMindMapNoteLeaf(leaf)) return false;
+		return !this.getSplitState(leaf).isActive;
+	}
+
 	public async toggleViewMode(leaf: TLeaf): Promise<boolean> {
+		if (!this.canToggleViewMode(leaf)) return false;
 		const snap = this.adapter.inspectLeaf(leaf);
 		if (!snap || !snap.filePath) return false;
 
@@ -266,6 +272,14 @@ export class WorkspaceSession<TLeaf extends object> {
 
 	public async openSourceMode(leaf: TLeaf, filePath: string): Promise<void> {
 		if (!filePath || this.isMutating) return;
+		const snap = this.adapter.inspectLeaf(leaf);
+		if (
+			snap?.kind === "mindmap" &&
+			snap.filePath === filePath &&
+			this.getSplitState(leaf).isActive
+		) {
+			return;
+		}
 		this.isMutating = true;
 		try {
 			await this.prepareLeavesForTransition(filePath, [leaf]);
@@ -288,9 +302,16 @@ export class WorkspaceSession<TLeaf extends object> {
 		options?: { focus?: boolean }
 	): Promise<void> {
 		if (!filePath || this.isMutating) return;
+		const snap = this.adapter.inspectLeaf(leaf);
+		if (
+			snap?.kind === "markdown" &&
+			snap.filePath === filePath &&
+			this.getSplitState(leaf).isActive
+		) {
+			return;
+		}
 		this.isMutating = true;
 		try {
-			const snap = this.adapter.inspectLeaf(leaf);
 			if (snap && (snap.kind === "mindmap" || snap.kind === "markdown") && snap.filePath) {
 				await this.prepareLeavesForTransition(snap.filePath, [leaf]);
 			}
@@ -357,7 +378,7 @@ export class WorkspaceSession<TLeaf extends object> {
 	// -------------------------------------------------------------------------
 
 	public canSplit(leaf: TLeaf): boolean {
-		return this.canToggleViewMode(leaf);
+		return this.isMindMapNoteLeaf(leaf);
 	}
 
 	public getSplitState(leaf: TLeaf): SplitState<TLeaf> {
@@ -554,6 +575,63 @@ export class WorkspaceSession<TLeaf extends object> {
 		const nextLayout: SplitLayout =
 			current.layout === "left-right" ? "top-bottom" : "left-right";
 		return this.openOrSwitchSplit(originLeaf, nextLayout);
+	}
+
+	public async swapSplitPositions(originLeaf: TLeaf): Promise<boolean> {
+		if (this.isMutating) return false;
+		const snap = this.adapter.inspectLeaf(originLeaf);
+		if (!snap || !snap.filePath) return false;
+		if (snap.kind !== "mindmap" && snap.kind !== "markdown") return false;
+
+		const current = this.getSplitState(originLeaf);
+		if (!current.isActive || !current.counterpartLeaf) return false;
+
+		const filePath = snap.filePath;
+		const originKind: "mindmap" | "markdown" = snap.kind;
+		const oldMindMapLeaf =
+			originKind === "mindmap" ? originLeaf : current.counterpartLeaf;
+		const oldSourceLeaf =
+			originKind === "markdown" ? originLeaf : current.counterpartLeaf;
+		const layout = current.layout ?? this.adapter.getDefaultSplitLayout();
+
+		this.isMutating = true;
+		try {
+			await this.prepareLeavesForTransition(filePath, [
+				oldMindMapLeaf,
+				oldSourceLeaf,
+			]);
+
+			// Swap View-Mode Overrides before applying view states so auto-open
+			// never hijacks the newly assigned Source Mode pane.
+			this.overrides.set(oldMindMapLeaf, filePath);
+			this.overrides.delete(oldSourceLeaf);
+
+			await this.adapter.applyViewState(oldMindMapLeaf, {
+				type: "markdown",
+				filePath,
+				mode: "source",
+			});
+			await this.adapter.applyViewState(oldSourceLeaf, {
+				type: "mindmap",
+				filePath,
+			});
+
+			this.trackSplitSession(
+				oldSourceLeaf,
+				oldMindMapLeaf,
+				"mindmap",
+				filePath,
+				layout
+			);
+			const nextFocusLeaf =
+				originKind === "mindmap" ? oldSourceLeaf : oldMindMapLeaf;
+			this.adapter.focusLeaf(nextFocusLeaf);
+			this.recenterMindMapsForFile(filePath);
+			this.adapter.refreshUi();
+			return true;
+		} finally {
+			this.isMutating = false;
+		}
 	}
 
 	public async closeSplit(originLeaf: TLeaf): Promise<boolean> {

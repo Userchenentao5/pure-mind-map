@@ -39,6 +39,8 @@ export class MindMapView extends TextFileView {
 	private isInternalRefresh = false;
 	private mountedHotkeysKey = "";
 	private splitHeaderActionEl: HTMLElement | null = null;
+	private swapSplitHeaderActionEl: HTMLElement | null = null;
+	private switchToSourceHeaderActionEl: HTMLElement | null = null;
 	private inlineEditor: NodeInlineEditor;
 	private exporter: MindMapExporter;
 
@@ -77,11 +79,23 @@ export class MindMapView extends TextFileView {
 			}
 		);
 		this.splitHeaderActionEl.addClass("mm-split-header-action");
-		this.addAction("code-2", "切换到 Markdown 源码模式 (Ctrl+.)", () => {
-			if (this.file) {
-				void this.plugin.session.openSourceMode(this.leaf, this.file.path);
+		this.swapSplitHeaderActionEl = this.addAction(
+			"arrow-left-right",
+			"调换拆分视图位置（脑图 ↔ 源码）",
+			() => {
+				void this.plugin.session.swapSplitPositions(this.leaf);
 			}
-		});
+		);
+		this.swapSplitHeaderActionEl.addClass("mm-swap-split-header-action");
+		this.switchToSourceHeaderActionEl = this.addAction(
+			"code-2",
+			"切换到 Markdown 源码模式 (Ctrl+.)",
+			() => {
+				if (this.file) {
+					void this.plugin.session.openSourceMode(this.leaf, this.file.path);
+				}
+			}
+		);
 		this.addAction("download", "导出脑图（可选格式与目录）", () => {
 			this.openExportModal();
 		});
@@ -203,6 +217,12 @@ export class MindMapView extends TextFileView {
 
 	public refreshSplitButtons(): void {
 		const state = this.plugin.session.getSplitState(this.leaf);
+		const swapIcon =
+			state.layout === "top-bottom" ? "arrow-up-down" : "arrow-left-right";
+		const swapTitle =
+			state.layout === "top-bottom"
+				? "调换上下位置（脑图 ↔ 源码）"
+				: "调换左右位置（脑图 ↔ 源码）";
 
 		if (this.toolbarEl) {
 			this.toolbarEl.querySelectorAll(".mm-split-btn").forEach((el) => {
@@ -214,6 +234,22 @@ export class MindMapView extends TextFileView {
 				);
 				activeBtn?.addClass("is-active");
 			}
+
+			const swapToolbarBtn =
+				this.toolbarEl.querySelector<HTMLElement>(".mm-split-swap-btn");
+			if (swapToolbarBtn) {
+				swapToolbarBtn.toggleClass("mm-is-hidden", !state.isActive);
+				if (state.isActive) {
+					setIcon(swapToolbarBtn, swapIcon);
+					swapToolbarBtn.setAttribute("aria-label", swapTitle);
+					swapToolbarBtn.setAttribute("title", swapTitle);
+				}
+			}
+
+			const switchSourceBtn = this.toolbarEl.querySelector<HTMLElement>(
+				".mm-switch-source-btn"
+			);
+			switchSourceBtn?.toggleClass("mm-is-hidden", state.isActive);
 		}
 
 		if (this.splitHeaderActionEl) {
@@ -223,6 +259,22 @@ export class MindMapView extends TextFileView {
 					? SPLIT_TOP_BOTTOM_ICON_ID
 					: SPLIT_LEFT_RIGHT_ICON_ID;
 			setIcon(this.splitHeaderActionEl, iconId);
+		}
+
+		if (this.swapSplitHeaderActionEl) {
+			this.swapSplitHeaderActionEl.toggleClass("mm-is-hidden", !state.isActive);
+			if (state.isActive) {
+				setIcon(this.swapSplitHeaderActionEl, swapIcon);
+				this.swapSplitHeaderActionEl.setAttribute("aria-label", swapTitle);
+				this.swapSplitHeaderActionEl.setAttribute("title", swapTitle);
+			}
+		}
+
+		if (this.switchToSourceHeaderActionEl) {
+			this.switchToSourceHeaderActionEl.toggleClass(
+				"mm-is-hidden",
+				state.isActive
+			);
 		}
 	}
 
@@ -556,6 +608,14 @@ export class MindMapView extends TextFileView {
 			},
 			"mm-split-btn mm-split-top-bottom"
 		);
+		addBtn(
+			"arrow-left-right",
+			"调换左右位置（脑图 ↔ 源码）",
+			() => {
+				void this.plugin.session.swapSplitPositions(this.leaf);
+			},
+			"mm-split-swap-btn mm-is-hidden"
+		);
 
 		addDivider();
 
@@ -563,11 +623,16 @@ export class MindMapView extends TextFileView {
 		addBtn("download", "导出脑图（可选格式与目录）", () => {
 			this.openExportModal();
 		});
-		addBtn("code-2", "切换到 Markdown 源码模式 (Ctrl+.)", () => {
-			if (this.file) {
-				void this.plugin.session.openSourceMode(this.leaf, this.file.path);
-			}
-		});
+		addBtn(
+			"code-2",
+			"切换到 Markdown 源码模式 (Ctrl+.)",
+			() => {
+				if (this.file) {
+					void this.plugin.session.openSourceMode(this.leaf, this.file.path);
+				}
+			},
+			"mm-switch-source-btn"
+		);
 	}
 
 	private setLayoutDirection(dir: MindMapDirection): void {

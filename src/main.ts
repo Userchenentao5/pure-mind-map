@@ -144,6 +144,20 @@ export default class SimpleMindMapPlugin extends Plugin {
 
 		if (state.isActive) {
 			menu.addSeparator();
+			const swapIcon =
+				state.layout === "top-bottom" ? "arrow-up-down" : "arrow-left-right";
+			const swapTitle =
+				state.layout === "top-bottom"
+					? "调换上下位置（脑图 ↔ 源码）"
+					: "调换左右位置（脑图 ↔ 源码）";
+			menu.addItem((item) => {
+				item
+					.setTitle(swapTitle)
+					.setIcon(swapIcon)
+					.onClick(() => {
+						void this.session.swapSplitPositions(leaf);
+					});
+			});
 			menu.addItem((item) => {
 				item
 					.setTitle("关闭拆分视图")
@@ -521,6 +535,21 @@ export default class SimpleMindMapPlugin extends Plugin {
 		});
 
 		this.addCommand({
+			id: "swap-split-view-positions",
+			name: "调换拆分视图位置（脑图 ↔ 源码） (Swap Split View Positions)",
+			checkCallback: (checking) => {
+				const leaf = this.app.workspace.getMostRecentLeaf();
+				if (!leaf || !this.session.getSplitState(leaf).isActive) {
+					return false;
+				}
+				if (!checking) {
+					void this.session.swapSplitPositions(leaf);
+				}
+				return true;
+			},
+		});
+
+		this.addCommand({
 			id: "close-split-view",
 			name: "关闭拆分视图 (Close Split View)",
 			checkCallback: (checking) => {
@@ -663,11 +692,15 @@ export default class SimpleMindMapPlugin extends Plugin {
 		const existingSplit = actionsEl.querySelector<HTMLElement>(
 			".mm-split-view-action"
 		);
+		const existingSwap = actionsEl.querySelector<HTMLElement>(
+			".mm-swap-split-action"
+		);
 		const shouldShow = this.session.isMarkdownMindMapLeaf(leaf);
 
 		if (!shouldShow) {
 			existingToggle?.remove();
 			existingSplit?.remove();
+			existingSwap?.remove();
 			return;
 		}
 
@@ -692,23 +725,51 @@ export default class SimpleMindMapPlugin extends Plugin {
 		}
 		splitBtn.toggleClass("is-active", splitState.isActive);
 
-		if (!existingToggle) {
-			const actionBtn = view.addAction(
-				MINDMAP_ICON_ID,
-				"切换回脑图视图 (Ctrl+.)",
-				() => {
-					if (view.file) {
-						void this.session.openMindMap(leaf, view.file.path);
+		if (splitState.isActive) {
+			// Single-pane mode switching is disallowed while Split View is active; offer swap instead
+			existingToggle?.remove();
+			const swapIcon =
+				splitState.layout === "top-bottom"
+					? "arrow-up-down"
+					: "arrow-left-right";
+			const swapTitle =
+				splitState.layout === "top-bottom"
+					? "调换上下位置（脑图 ↔ 源码）"
+					: "调换左右位置（脑图 ↔ 源码）";
+
+			let swapBtn = existingSwap;
+			if (!swapBtn) {
+				swapBtn = view.addAction(swapIcon, swapTitle, () => {
+					void this.session.swapSplitPositions(leaf);
+				});
+				swapBtn.addClass("mm-swap-split-action");
+			} else {
+				setIcon(swapBtn, swapIcon);
+				swapBtn.setAttribute("aria-label", swapTitle);
+				swapBtn.setAttribute("title", swapTitle);
+			}
+		} else {
+			existingSwap?.remove();
+			if (!existingToggle) {
+				const actionBtn = view.addAction(
+					MINDMAP_ICON_ID,
+					"切换回脑图视图 (Ctrl+.)",
+					() => {
+						if (view.file) {
+							void this.session.openMindMap(leaf, view.file.path);
+						}
 					}
-				}
-			);
-			actionBtn.addClass("mm-switch-to-mindmap-action");
+				);
+				actionBtn.addClass("mm-switch-to-mindmap-action");
+			}
 		}
 	}
 
 	private removeMarkdownHeaderButtons(): void {
 		activeDocument
-			.querySelectorAll(".mm-switch-to-mindmap-action, .mm-split-view-action")
+			.querySelectorAll(
+				".mm-switch-to-mindmap-action, .mm-split-view-action, .mm-swap-split-action"
+			)
 			.forEach((el) => el.remove());
 	}
 }
