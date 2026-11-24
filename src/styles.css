@@ -37,14 +37,22 @@
 	transform: translateX(-50%);
 	z-index: 20;
 	display: flex;
+	flex-wrap: wrap;
+	justify-content: center;
 	align-items: center;
 	gap: 4px;
+	max-width: calc(100% - 24px);
 	padding: 4px 8px;
 	border-radius: 10px;
 	background: var(--background-secondary);
 	border: 1px solid var(--background-modifier-border);
 	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.14);
 	backdrop-filter: blur(8px);
+}
+
+.view-action.mm-split-header-action.is-active,
+.view-action.mm-split-view-action.is-active {
+	color: var(--interactive-accent);
 }
 
 .mm-toolbar-btn {

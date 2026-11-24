@@ -5,22 +5,21 @@ import {
 	resolveExportBackground,
 } from "@mind-elixir/export-mindmap";
 import {
-	EXPORT_COMPUTED_STYLE_PROPS,
-	allocateUniqueVaultPath,
-	assembleStandaloneSvg,
-	getExportFormatMeta,
-	resolveExportFolder,
-	sanitizeExportBaseName,
+	MindMapExportPipeline,
 	type ExportDestination,
 	type ExportFormat,
-} from "./exporterCore";
+	type ExportFormatMeta,
+	type LocalSaveOutcome,
+	type RenderedExportPayload,
+	type StandaloneSvgSource,
+} from "./MindMapExportPipeline";
 
 export interface ExportRequest {
 	mind: MindElixir;
 	sourceFile: TFile | null;
 	format: ExportFormat;
 	destination: ExportDestination;
-	vaultFolder: string;
+	vaultFolder?: string;
 	fileName?: string;
 	scale: number;
 }
@@ -42,111 +41,185 @@ interface SaveFilePickerWindow extends Window {
 }
 
 /**
- * Deep module owning Mind Map multi-format export (PNG, SVG, JPEG, WebP)
- * to either an Obsidian Vault folder or a user-selected local disk folder.
+ * Curated computed CSS properties to inline on cloned mind-elixir nodes so
+ * standalone SVG <foreignObject> matches the live canvas layout pixel-for-pixel.
+ */
+const EXPORT_COMPUTED_STYLE_PROPS: readonly string[] = [
+	"box-sizing",
+	"display",
+	"position",
+	"top",
+	"right",
+	"bottom",
+	"left",
+	"width",
+	"height",
+	"min-width",
+	"min-height",
+	"max-width",
+	"max-height",
+	"flex",
+	"flex-basis",
+	"flex-direction",
+	"flex-grow",
+	"flex-shrink",
+	"flex-wrap",
+	"gap",
+	"row-gap",
+	"column-gap",
+	"align-content",
+	"align-items",
+	"align-self",
+	"justify-content",
+	"justify-items",
+	"justify-self",
+	"order",
+	"float",
+	"clear",
+	"margin",
+	"margin-top",
+	"margin-right",
+	"margin-bottom",
+	"margin-left",
+	"padding",
+	"padding-top",
+	"padding-right",
+	"padding-bottom",
+	"padding-left",
+	"border",
+	"border-top",
+	"border-right",
+	"border-bottom",
+	"border-left",
+	"border-width",
+	"border-top-width",
+	"border-right-width",
+	"border-bottom-width",
+	"border-left-width",
+	"border-style",
+	"border-top-style",
+	"border-right-style",
+	"border-bottom-style",
+	"border-left-style",
+	"border-color",
+	"border-top-color",
+	"border-right-color",
+	"border-bottom-color",
+	"border-left-color",
+	"border-radius",
+	"border-top-left-radius",
+	"border-top-right-radius",
+	"border-bottom-left-radius",
+	"border-bottom-right-radius",
+	"background",
+	"background-color",
+	"background-image",
+	"background-repeat",
+	"background-size",
+	"background-position",
+	"color",
+	"font",
+	"font-family",
+	"font-size",
+	"font-weight",
+	"font-style",
+	"line-height",
+	"text-align",
+	"text-decoration",
+	"text-transform",
+	"text-shadow",
+	"text-overflow",
+	"white-space",
+	"word-break",
+	"word-wrap",
+	"vertical-align",
+	"opacity",
+	"visibility",
+	"transform",
+	"transform-origin",
+	"box-shadow",
+	"outline",
+	"z-index",
+	"overflow",
+	"overflow-x",
+	"overflow-y",
+	"fill",
+	"stroke",
+	"stroke-width",
+	"stroke-linecap",
+	"stroke-linejoin",
+	"stroke-dasharray",
+	"direction",
+	"unicode-bidi",
+	"writing-mode",
+];
+
+/**
+ * Obsidian/DOM adapter wiring MindMapExportPipeline to Vault file I/O,
+ * browser File System Access / download fallback, and live canvas SVG cloning.
  */
 export class MindMapExporter {
 	private app: App;
+	private pipeline: MindMapExportPipeline<MindElixir>;
 
 	constructor(app: App) {
 		this.app = app;
+		this.pipeline = new MindMapExportPipeline<MindElixir>({
+			renderSvgSource: (mind) => this.captureSvgSource(mind),
+			renderRasterBytes: async (mind, format, options) => {
+				const blob = await exportImageBlob(mind, format, {
+					scale: options.scale,
+					quality: options.quality,
+					watermarkEnabled: false,
+				});
+				return await blob.arrayBuffer();
+			},
+			normalizeVaultPath: (path) => normalizePath(path),
+			vaultPathExists: (path) =>
+				Boolean(this.app.vault.getAbstractFileByPath(path)),
+			ensureVaultFolder: async (folderPath) => {
+				await this.app.vault.createFolder(folderPath);
+			},
+			writeVaultBinary: async (path, data) => {
+				await this.app.vault.createBinary(path, data);
+			},
+			writeVaultText: async (path, text) => {
+				await this.app.vault.create(path, text);
+			},
+			saveLocalFile: (payload, suggestedName, meta) =>
+				this.saveToLocalDisk(payload, suggestedName, meta),
+			notify: (message) => {
+				new Notice(message);
+			},
+			logError: (context, err) => {
+				console.error(context, err);
+			},
+		});
 	}
 
 	public async exportMindMap(request: ExportRequest): Promise<string | null> {
-		const meta = getExportFormatMeta(request.format);
-		const baseName = sanitizeExportBaseName(
-			request.fileName ?? request.sourceFile?.basename ?? "mind-map"
-		);
-
-		try {
-			new Notice(`正在生成 ${meta.format.toUpperCase()} 图片...`);
-			const blob = await this.renderToBlob(request.mind, request.format, request.scale);
-
-			if (request.destination === "local") {
-				return await this.saveToLocalDisk(blob, `${baseName}.${meta.extension}`, meta);
-			}
-
-			return await this.saveToVault(
-				blob,
-				request.sourceFile,
-				request.vaultFolder,
-				baseName,
-				meta.extension,
-				meta.isRaster
-			);
-		} catch (err) {
-			if (err instanceof DOMException && err.name === "AbortError") {
-				return null;
-			}
-			console.error(`[PureMindMap] ${meta.format} export failed:`, err);
-			new Notice(
-				`导出 ${meta.format.toUpperCase()} 失败：${err instanceof Error ? err.message : String(err)}`
-			);
-			return null;
-		}
-	}
-
-	private async renderToBlob(
-		mind: MindElixir,
-		format: ExportFormat,
-		scale: number
-	): Promise<Blob> {
-		if (format === "svg") {
-			const svgContent = await this.buildStandaloneSvg(mind);
-			return new Blob([svgContent], { type: "image/svg+xml;charset=utf-8" });
-		}
-
-		return await exportImageBlob(mind, format, {
-			scale: scale || 2,
-			quality: format === "png" ? 1 : 0.92,
-			watermarkEnabled: false,
+		return this.pipeline.exportMindMap({
+			mind: request.mind,
+			sourceBasename: request.sourceFile?.basename,
+			sourceFolder: request.sourceFile?.parent?.path,
+			format: request.format,
+			destination: request.destination,
+			vaultFolder: request.vaultFolder,
+			fileName: request.fileName,
+			scale: request.scale,
 		});
-	}
-
-	private async saveToVault(
-		blob: Blob,
-		sourceFile: TFile | null,
-		configuredFolder: string,
-		baseName: string,
-		extension: string,
-		isBinary: boolean
-	): Promise<string> {
-		const targetFolder = resolveExportFolder(
-			configuredFolder,
-			sourceFile?.parent?.path
-		);
-		if (targetFolder) {
-			const normalizedFolder = normalizePath(targetFolder);
-			if (!this.app.vault.getAbstractFileByPath(normalizedFolder)) {
-				await this.app.vault.createFolder(normalizedFolder);
-			}
-		}
-
-		const { filePath } = allocateUniqueVaultPath({
-			folder: targetFolder,
-			baseName,
-			extension,
-			separator: "-",
-			exists: (candidate) =>
-				Boolean(this.app.vault.getAbstractFileByPath(normalizePath(candidate))),
-		});
-
-		const normalizedPath = normalizePath(filePath);
-		if (isBinary) {
-			await this.app.vault.createBinary(normalizedPath, await blob.arrayBuffer());
-		} else {
-			await this.app.vault.create(normalizedPath, await blob.text());
-		}
-
-		new Notice(`已导出到库内：${normalizedPath}`);
-		return normalizedPath;
 	}
 
 	private async saveToLocalDisk(
-		blob: Blob,
+		payload: RenderedExportPayload,
 		suggestedName: string,
-		meta: { label: string; extension: string; mimeType: string }
-	): Promise<string | null> {
+		meta: ExportFormatMeta
+	): Promise<LocalSaveOutcome> {
+		const blob =
+			payload.kind === "svg"
+				? new Blob([payload.svgText], { type: payload.mimeType })
+				: new Blob([payload.data], { type: payload.mimeType });
+
 		const win = window as SaveFilePickerWindow;
 		if (typeof win.showSaveFilePicker === "function") {
 			const handle = await win.showSaveFilePicker({
@@ -161,8 +234,7 @@ export class MindMapExporter {
 			const writable = await handle.createWritable();
 			await writable.write(blob);
 			await writable.close();
-			new Notice(`已导出到本地：${handle.name}`);
-			return handle.name;
+			return { method: "picker", savedName: handle.name };
 		}
 
 		// Fallback when File System Access API is unavailable (e.g. mobile)
@@ -173,18 +245,17 @@ export class MindMapExporter {
 			});
 			link.click();
 			link.remove();
-			new Notice(`已触发下载：${suggestedName}`);
-			return suggestedName;
+			return { method: "download", savedName: suggestedName };
 		} finally {
 			window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 		}
 	}
 
 	/**
-	 * Builds a pixel-accurate standalone SVG by cloning mind.nodes and inlining
-	 * every computed CSS property in lockstep, preserving flex layout and branch paths.
+	 * Clones mind.nodes and inlines every computed CSS property in lockstep,
+	 * preserving flex layout, branch paths, and embedded images for standalone SVG.
 	 */
-	private async buildStandaloneSvg(mind: MindElixir): Promise<string> {
+	private async captureSvgSource(mind: MindElixir): Promise<StandaloneSvgSource> {
 		const sourceEl = mind.nodes;
 		const width = Math.max(sourceEl.offsetWidth, sourceEl.scrollWidth, 200);
 		const height = Math.max(sourceEl.offsetHeight, sourceEl.scrollHeight, 150);
@@ -235,12 +306,12 @@ export class MindMapExporter {
 		await this.inlineImagesAsDataUrls(host);
 
 		const serializedHostHtml = new XMLSerializer().serializeToString(host);
-		return assembleStandaloneSvg({
+		return {
 			width,
 			height,
 			bgColor,
 			serializedHostHtml,
-		});
+		};
 	}
 
 	private inlineComputedStylesRecursive(source: Element, target: Element): void {

@@ -7,9 +7,10 @@ Create and edit interactive mind maps backed by standard Markdown (`.md`) files 
 ## Features
 
 - **Standard Markdown storage**: Mind map notes are plain `.md` files identified by YAML frontmatter (`mindmap-plugin: basic`), using standard headings (`#`, `##`) and nested lists (`-`). Fully compatible with Obsidian backlinks, graph view, search, tags, and sync.
-- **Default mind map view & instant source switch**:
+- **Default mind map view, instant source switch & live split view**:
   - Opening a mind map note automatically launches the interactive mind map canvas (`Tab` for child node, `Enter` for sibling, double-click / `F2` to edit, drag-and-drop reparenting, undo/redo, collapse/expand, and 4 layout directions).
   - Switch between the mind map canvas and Obsidian's native Markdown editor with one click (header / toolbar button) or via the command **Toggle Mind Map / Source Mode**.
+  - **Split View (Left-Right & Top-Bottom)**: View and edit the mind map canvas and Markdown source side-by-side or stacked top-and-bottom at the same time — edits on either side automatically sync to the other in real time. Switch between left-right and top-bottom layouts from the floating toolbar, view header menu, settings, or command palette.
 - **Deep Obsidian integration**:
   - **Inline `[[wikilink]]` & `![[embed]]` completion**: Type `[[` or `![[` inside any node to search and insert vault notes or images with keyboard navigation.
   - **Clickable links & hover preview**: Click wikilinks to open notes (`Ctrl/Cmd + Click` in a new tab) and hover for native page previews.
@@ -25,10 +26,10 @@ Create and edit interactive mind maps backed by standard Markdown (`.md`) files 
 
 ### Early access via BRAT
 1. Install the **BRAT** plugin from Community Plugins.
-2. Open BRAT settings → **Add Beta plugin** and enter `Userchenentao5/simple-obsidian-mind-map`.
+2. Open BRAT settings → **Add Beta plugin** and enter `Userchenentao5/pure-mind-map`.
 
 ### Manual installation
-Download `main.js`, `manifest.json`, and `styles.css` from the latest [GitHub Release](https://github.com/Userchenentao5/simple-obsidian-mind-map/releases) into `<vault>/.obsidian/plugins/pure-mind-map/` and enable **Pure Mind Map** in Obsidian settings.
+Download `main.js`, `manifest.json`, and `styles.css` from the latest [GitHub Release](https://github.com/Userchenentao5/pure-mind-map/releases) into `<vault>/.obsidian/plugins/pure-mind-map/` and enable **Pure Mind Map** in Obsidian settings.
 
 ## Usage Notes
 
@@ -44,9 +45,10 @@ Download `main.js`, `manifest.json`, and `styles.css` from the latest [GitHub Re
 ### 核心特性
 
 - **标准 `.md` 存储**：通过 YAML Frontmatter（`mindmap-plugin: basic`）标识脑图，底层采用标准标题与无序列表语法，天然兼容 Obsidian 双链、反向链接、关系图谱、全文检索与同步。
-- **默认图谱编辑 + 一键切源码**：
+- **默认图谱编辑 + 一键切源码 + 实时双向拆分视图**：
   - 打开脑图文件自动进入脑图画布（`Tab` 添加子节点、`Enter` 添加兄弟节点、双击 / `F2` 编辑、拖拽调整层级、撤销重做、折叠展开、4 种布局方向）。
   - 点击标题栏/工具栏切换图标，或在命令面板运行 `切换脑图视图 / 源码模式` 即可在脑图与原生 Markdown 编辑器间无感切换。
+  - **拆分视图（支持左右 / 上下布局）**：同时打开脑图画布与原生 Markdown 源码页面，两侧均可直接编辑，任一侧修改后另一侧自动实时同步；支持在悬浮工具栏、标签页右上角菜单、插件设置或命令面板中一键切换左右拆分、上下拆分或关闭拆分。
 - **深度融合 Obsidian 生态**：
   - 节点编辑时输入 `[[` 或 `![[` 实时弹出库内笔记/图片补全浮窗；右键节点文本支持格式设置、插入双链/外链/图片及剪贴板操作。
   - 支持双链点击跳转与原生悬停预览、剪贴板直接粘贴图片到节点，并自动跟随 Obsidian 明暗主题。

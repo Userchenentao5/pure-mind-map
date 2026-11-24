@@ -2,7 +2,7 @@
 
 ### Issue tracker
 
-Issues and specs are tracked in GitHub Issues for `Userchenentao5/simple-obsidian-mind-map` via `gh`. See `docs/agents/issue-tracker.md`.
+Issues and specs are tracked in GitHub Issues for `Userchenentao5/pure-mind-map` via `gh`. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
