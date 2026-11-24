@@ -25,6 +25,7 @@ interface FakeLeaf {
 function createWorkspaceHarness(opts?: {
 	initialLeaves?: FakeLeaf[];
 	autoOpen?: boolean;
+	layoutReady?: boolean;
 	defaultSplitLayout?: SplitLayout;
 	mindMapPaths?: string[];
 	holdApply?: boolean;
@@ -33,6 +34,7 @@ function createWorkspaceHarness(opts?: {
 	const leaves = new Set<FakeLeaf>(opts?.initialLeaves ?? []);
 	const mindMapPaths = new Set(opts?.mindMapPaths ?? ["maps/a.md", "maps/b.md"]);
 	let autoOpen = opts?.autoOpen ?? true;
+	let layoutReady = opts?.layoutReady ?? true;
 	let defaultSplitLayout: SplitLayout = opts?.defaultSplitLayout ?? "left-right";
 	let activeLeaf: FakeLeaf | null = opts?.initialLeaves?.[0] ?? null;
 	let nextId = (opts?.initialLeaves?.length ?? 0) + 1;
@@ -47,6 +49,7 @@ function createWorkspaceHarness(opts?: {
 
 	const adapter: WorkspaceSessionAdapter<FakeLeaf> = {
 		isAutoOpenEnabled: () => autoOpen,
+		isLayoutReady: () => layoutReady,
 		getDefaultSplitLayout: () => defaultSplitLayout,
 		isMindMapPath: (p) => mindMapPaths.has(p),
 
@@ -158,6 +161,9 @@ function createWorkspaceHarness(opts?: {
 		events,
 		setAutoOpen: (v: boolean) => {
 			autoOpen = v;
+		},
+		setLayoutReady: (v: boolean) => {
+			layoutReady = v;
 		},
 		setDefaultSplitLayout: (layout: SplitLayout) => {
 			defaultSplitLayout = layout;
@@ -348,6 +354,72 @@ describe("WorkspaceSession", () => {
 			layout: "left-right",
 			counterpartLeaf: splitSourceLeaf,
 		});
+	});
+
+	it("does not hijack Split View Source panes during cold startup restoration or deferred tab hydration", async () => {
+		const leftLeaf: FakeLeaf = {
+			id: "L1",
+			kind: "other",
+			filePath: null,
+			markdown: "# A",
+			dirty: false,
+			rect: { left: 0, top: 0, width: 500, height: 800 },
+		};
+		const rightLeaf: FakeLeaf = {
+			id: "L2",
+			kind: "other",
+			filePath: null,
+			markdown: "# A",
+			dirty: false,
+			rect: { left: 500, top: 0, width: 500, height: 800 },
+		};
+		const deferredSourceLeaf: FakeLeaf = {
+			id: "L3",
+			kind: "other",
+			filePath: null,
+			markdown: "# A",
+			dirty: false,
+			rect: { left: 500, top: 0, width: 500, height: 800 },
+		};
+
+		const { session, setLayoutReady } = createWorkspaceHarness({
+			initialLeaves: [leftLeaf, rightLeaf, deferredSourceLeaf],
+			autoOpen: true,
+			layoutReady: false,
+		});
+
+		// 1. Cold startup before layoutReady: Obsidian restores left as mindmap and right as markdown
+		expect(
+			session.resolveIncomingViewType(leftLeaf, MINDMAP_VIEW_TYPE, "maps/a.md")
+		).toBe(MINDMAP_VIEW_TYPE);
+		leftLeaf.kind = "mindmap";
+		leftLeaf.filePath = "maps/a.md";
+
+		expect(
+			session.resolveIncomingViewType(rightLeaf, "markdown", "maps/a.md", "source")
+		).toBe("markdown");
+		rightLeaf.kind = "markdown";
+		rightLeaf.filePath = "maps/a.md";
+
+		// 2. Layout ready fires: rightLeaf gets a View-Mode Override and stays in Source Mode
+		setLayoutReady(true);
+		await session.restoreOnLayoutReady();
+		expect(rightLeaf.kind).toBe("markdown");
+		expect(session.hasOverrideFor(rightLeaf, "maps/a.md")).toBe(true);
+		expect(
+			session.resolveIncomingViewType(rightLeaf, "markdown", "maps/a.md", "source")
+		).toBe("markdown");
+
+		// 3. Deferred Source Mode tab hydrated AFTER layoutReady also stays in Source Mode
+		expect(
+			session.resolveIncomingViewType(
+				deferredSourceLeaf,
+				"markdown",
+				"maps/a.md",
+				"source"
+			)
+		).toBe("markdown");
+		expect(session.hasOverrideFor(deferredSourceLeaf, "maps/a.md")).toBe(true);
 	});
 
 	it("installs View-Mode Override when opening Split View so auto-open never hijacks the Source pane", async () => {

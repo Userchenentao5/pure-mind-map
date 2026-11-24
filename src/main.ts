@@ -160,6 +160,7 @@ export default class SimpleMindMapPlugin extends Plugin {
 	private createWorkspaceSession(): WorkspaceSession<WorkspaceLeaf> {
 		return new WorkspaceSession<WorkspaceLeaf>({
 			isAutoOpenEnabled: () => this.settings.autoOpenMindMap,
+			isLayoutReady: () => this.app.workspace.layoutReady,
 			getDefaultSplitLayout: () => this.settings.defaultSplitLayout,
 			isMindMapPath: (filePath) => {
 				const af = this.app.vault.getAbstractFileByPath(filePath);
@@ -185,6 +186,18 @@ export default class SimpleMindMapPlugin extends Plugin {
 						kind: "markdown",
 						filePath: leaf.view.file?.path ?? null,
 						rawMarkdown: leaf.view.data,
+					};
+				}
+				// Recognize deferred Mind Map tabs (Obsidian 1.7+) before hydration
+				const viewState = leaf.getViewState();
+				const stateFile =
+					typeof viewState?.state?.file === "string"
+						? viewState.state.file
+						: null;
+				if (viewState.type === MINDMAP_VIEW_TYPE && stateFile) {
+					return {
+						kind: "mindmap",
+						filePath: stateFile,
 					};
 				}
 				return { kind: "other", filePath: null };
@@ -289,10 +302,15 @@ export default class SimpleMindMapPlugin extends Plugin {
 						typeof viewState?.state?.file === "string"
 							? viewState.state.file
 							: null;
+					const stateMode =
+						typeof viewState?.state?.mode === "string"
+							? viewState.state.mode
+							: null;
 					const resolvedType = session.resolveIncomingViewType(
 						this,
 						viewState.type,
-						stateFile
+						stateFile,
+						stateMode
 					);
 					const nextState =
 						resolvedType !== viewState.type
