@@ -1,9 +1,10 @@
 @import "mind-elixir/style.css";
 
+.workspace-leaf-content .view-content.mm-view-container,
 .mm-view-container {
 	position: relative;
-	padding: 0 !important;
-	overflow: hidden !important;
+	padding: 0;
+	overflow: hidden;
 	width: 100%;
 	height: 100%;
 	display: flex;
@@ -56,10 +57,13 @@
 	color: var(--interactive-accent);
 }
 
+.mm-floating-toolbar .mm-toolbar-btn.mm-is-hidden,
+.view-header .view-action.mm-is-hidden,
 .mm-is-hidden {
-	display: none !important;
+	display: none;
 }
 
+.mm-view-container .mm-floating-toolbar button.mm-toolbar-btn,
 .mm-toolbar-btn {
 	display: inline-flex;
 	align-items: center;
@@ -72,7 +76,7 @@
 	background: transparent;
 	color: var(--text-muted);
 	cursor: pointer;
-	box-shadow: none !important;
+	box-shadow: none;
 	transition: background-color 0.15s ease, color 0.15s ease;
 }
 
@@ -99,21 +103,25 @@
 }
 
 /* Node Markdown styling */
-.mm-mind-elixir-root me-tpc {
+.mm-mind-elixir-root .map-container .me-tpc {
 	max-width: 380px;
 	white-space: pre-wrap;
 	word-break: break-word;
 	line-height: 1.45;
 }
 
-.mm-mind-elixir-root me-tpc.mm-editing-node {
-	visibility: hidden !important;
+.mm-mind-elixir-root .map-container .me-tpc.mm-editing-node {
+	visibility: hidden;
 }
 
-.mm-mind-elixir-root #input-box {
+.mm-mind-elixir-root .map-container #input-box {
 	z-index: 50;
-	right: auto !important;
-	margin: 0 !important;
+	left: var(--mm-input-left, 0);
+	top: var(--mm-input-top, 0);
+	right: auto;
+	margin: 0;
+	min-width: var(--mm-input-min-width, auto);
+	min-height: var(--mm-input-min-height, auto);
 	box-sizing: border-box;
 	max-width: 380px;
 	white-space: pre-wrap;
@@ -121,7 +129,7 @@
 	line-height: 1.45;
 }
 
-.mm-mind-elixir-root me-tpc .text {
+.mm-mind-elixir-root .map-container .me-tpc .text {
 	display: inline-block;
 	text-align: left;
 }
@@ -190,8 +198,8 @@
 }
 
 /* Keep root node link contrast readable on accent background */
-.mm-mind-elixir-root me-root me-tpc .mm-wikilink,
-.mm-mind-elixir-root me-root me-tpc .mm-extlink {
+.mm-mind-elixir-root .map-container .me-root .me-tpc .mm-wikilink,
+.mm-mind-elixir-root .map-container .me-root .me-tpc .mm-extlink {
 	color: #ffffff;
 	border-bottom-color: rgba(255, 255, 255, 0.7);
 }
@@ -199,6 +207,9 @@
 /* Inline [[wikilink]] / ![[embed]] suggester popup */
 .mm-link-suggester {
 	position: fixed;
+	left: var(--mm-suggester-left, 0);
+	top: var(--mm-suggester-top, 0);
+	width: var(--mm-suggester-width, 320px);
 	z-index: 1000;
 	border-radius: 10px;
 	background: var(--background-primary);

@@ -266,7 +266,7 @@ export class MindMapExporter {
 
 		// Prevent premature text wrapping on fixed-width nodes inside <foreignObject>
 		const nowrapProps: Record<string, string> = { "text-wrap": "nowrap" };
-		const topicNodes = Array.from(clone.querySelectorAll<HTMLElement>("me-tpc"));
+		const topicNodes = Array.from(clone.querySelectorAll<HTMLElement>(".me-tpc"));
 		for (const tpc of topicNodes) {
 			const w = tpc.style.getPropertyValue("width");
 			const maxW = tpc.style.getPropertyValue("max-width");
@@ -384,7 +384,7 @@ export class MindMapExporter {
 			img.crossOrigin = "anonymous";
 			img.onload = () => {
 				try {
-					const canvas = activeDocument.createElement("canvas");
+					const canvas = createEl("canvas");
 					canvas.width = img.naturalWidth || img.width;
 					canvas.height = img.naturalHeight || img.height;
 					const ctx = canvas.getContext("2d");
