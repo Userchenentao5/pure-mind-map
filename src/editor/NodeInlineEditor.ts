@@ -229,11 +229,19 @@ export class NodeInlineEditor {
 			cur = cur.offsetParent as HTMLElement | null;
 		}
 
+		// Clear MindElixir's inline positioning/margin so CSS rules and custom properties take effect cleanly
+		inputBox.style.removeProperty("left");
+		inputBox.style.removeProperty("top");
+		inputBox.style.removeProperty("right");
+		inputBox.style.removeProperty("margin");
+		inputBox.style.removeProperty("min-width");
+		inputBox.style.removeProperty("min-height");
+
 		inputBox.setCssProps({
-			left: `${left}px`,
-			top: `${top}px`,
-			"min-width": `${tpc.offsetWidth}px`,
-			"min-height": `${tpc.offsetHeight}px`,
+			"--mm-input-left": `${left}px`,
+			"--mm-input-top": `${top}px`,
+			"--mm-input-min-width": `${tpc.offsetWidth}px`,
+			"--mm-input-min-height": `${tpc.offsetHeight}px`,
 		});
 	}
 
@@ -527,9 +535,11 @@ export class NodeInlineEditor {
 			top = Math.max(12, rect.top - estimatedHeight - 6);
 		}
 
-		this.popupEl.style.left = `${left}px`;
-		this.popupEl.style.top = `${top}px`;
-		this.popupEl.style.width = `${popupWidth}px`;
+		this.popupEl.setCssProps({
+			"--mm-suggester-left": `${left}px`,
+			"--mm-suggester-top": `${top}px`,
+			"--mm-suggester-width": `${popupWidth}px`,
+		});
 	}
 
 	private destroyPopupDom(): void {
