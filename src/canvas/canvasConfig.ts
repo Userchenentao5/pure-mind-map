@@ -2,9 +2,106 @@ import {
 	DARK_THEME,
 	THEME,
 	type KeypressOptions,
+	type Options,
 	type Theme,
 } from "mind-elixir";
-import type { MindMapHotkeys, ThemeMode } from "../settings/types";
+import type {
+	ContextMenuLanguage,
+	MindMapHotkeys,
+	ThemeMode,
+} from "../settings/types";
+
+export type CanvasContextMenuOption = Exclude<
+	NonNullable<Options["contextMenu"]>,
+	boolean
+>;
+type ContextMenuLocale = NonNullable<CanvasContextMenuOption["locale"]>;
+
+const CONTEXT_MENU_LOCALES: Record<ContextMenuLanguage, ContextMenuLocale> = {
+	"zh-CN": {
+		addChild: "添加子节点",
+		addParent: "添加父节点",
+		addSibling: "添加兄弟节点",
+		removeNode: "删除节点",
+		focus: "专注模式",
+		cancelFocus: "退出专注模式",
+		moveUp: "上移",
+		moveDown: "下移",
+		link: "连接节点",
+		linkBidirectional: "双向连接",
+		clickTips: "请点击目标节点",
+		summary: "添加概要",
+	},
+	"zh-TW": {
+		addChild: "新增子節點",
+		addParent: "新增父節點",
+		addSibling: "新增同級節點",
+		removeNode: "刪除節點",
+		focus: "專注模式",
+		cancelFocus: "退出專注模式",
+		moveUp: "上移",
+		moveDown: "下移",
+		link: "連接節點",
+		linkBidirectional: "雙向連接",
+		clickTips: "請點擊目標節點",
+		summary: "新增概要",
+	},
+	en: {
+		addChild: "Add child",
+		addParent: "Add parent",
+		addSibling: "Add sibling",
+		removeNode: "Remove node",
+		focus: "Focus Mode",
+		cancelFocus: "Cancel Focus Mode",
+		moveUp: "Move up",
+		moveDown: "Move down",
+		link: "Link",
+		linkBidirectional: "Bidirectional Link",
+		clickTips: "Please click the target node",
+		summary: "Summary",
+	},
+	ja: {
+		addChild: "子ノードを追加",
+		addParent: "親ノードを追加",
+		addSibling: "兄弟ノードを追加",
+		removeNode: "ノードを削除",
+		focus: "フォーカスモード",
+		cancelFocus: "フォーカス解除",
+		moveUp: "上へ移動",
+		moveDown: "下へ移動",
+		link: "リンク",
+		linkBidirectional: "双方向リンク",
+		clickTips: "対象ノードをクリックしてください",
+		summary: "サマリー",
+	},
+	ko: {
+		addChild: "하위 노드 추가",
+		addParent: "상위 노드 추가",
+		addSibling: "형제 노드 추가",
+		removeNode: "노드 삭제",
+		focus: "집중 모드",
+		cancelFocus: "집중 모드 해제",
+		moveUp: "위로 이동",
+		moveDown: "아래로 이동",
+		link: "연결",
+		linkBidirectional: "양방향 연결",
+		clickTips: "대상 노드를 클릭하세요",
+		summary: "요약",
+	},
+};
+
+export function buildContextMenuOption(
+	language: ContextMenuLanguage | undefined
+): CanvasContextMenuOption {
+	const locale =
+		(language && CONTEXT_MENU_LOCALES[language]) ||
+		CONTEXT_MENU_LOCALES["zh-CN"];
+	return {
+		focus: true,
+		link: true,
+		locale,
+	};
+}
 
 export interface CanvasRelinkHost {
 	isReady(): boolean;

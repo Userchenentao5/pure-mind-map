@@ -159,6 +159,16 @@ mindmap-plugin: basic
 		expect(html).not.toContain("<script>");
 		expect(html).toContain("&lt;script&gt;");
 		expect(html).toContain('<span class="mm-tag">#测试</span>');
+
+		expect(renderNodeMarkdown("**dfadsf***asdf*")).toBe(
+			"<strong>dfadsf</strong><em>asdf</em>"
+		);
+		expect(renderNodeMarkdown("*asdf***dfadsf**")).toBe(
+			"<em>asdf</em><strong>dfadsf</strong>"
+		);
+		expect(renderNodeMarkdown("***both***")).toBe(
+			"<strong><em>both</em></strong>"
+		);
 	});
 
 	it("never nests H1 under a synthetic root if empty comments or text precede H1", () => {
