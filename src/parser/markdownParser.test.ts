@@ -6,7 +6,6 @@ import {
 	hasMindMapFrontmatter,
 	markdownToMindMap,
 	mindMapToMarkdown,
-	renderNodeMarkdown,
 } from "./markdownParser";
 
 describe("markdownParser", () => {
@@ -141,34 +140,6 @@ mindmap-plugin: basic
 		expect(reparsed.data.arrows).toHaveLength(1);
 		expect(reparsed.data.arrows![0].from).toBe(firstId);
 		expect(reparsed.data.arrows![0].to).toBe(secondId);
-	});
-
-	it("renders wikilinks, images, inline styles, and escapes raw HTML safely", () => {
-		const html = renderNodeMarkdown(
-			"**重点** `[[raw]]` [[目标笔记|别名]] ![[demo.png|200]] <script>alert(1)</script> #测试",
-			(target) => (target === "demo.png" ? "app://local/demo.png" : null)
-		);
-
-		expect(html).toContain("<strong>重点</strong>");
-		expect(html).toContain('<code class="mm-inline-code">[[raw]]</code>');
-		expect(html).toContain('class="internal-link mm-wikilink"');
-		expect(html).toContain('data-href="目标笔记"');
-		expect(html).toContain(">别名</a>");
-		expect(html).toContain('src="app://local/demo.png"');
-		expect(html).toContain('style="width:200px;height:auto"');
-		expect(html).not.toContain("<script>");
-		expect(html).toContain("&lt;script&gt;");
-		expect(html).toContain('<span class="mm-tag">#测试</span>');
-
-		expect(renderNodeMarkdown("**dfadsf***asdf*")).toBe(
-			"<strong>dfadsf</strong><em>asdf</em>"
-		);
-		expect(renderNodeMarkdown("*asdf***dfadsf**")).toBe(
-			"<em>asdf</em><strong>dfadsf</strong>"
-		);
-		expect(renderNodeMarkdown("***both***")).toBe(
-			"<strong><em>both</em></strong>"
-		);
 	});
 
 	it("never nests H1 under a synthetic root if empty comments or text precede H1", () => {

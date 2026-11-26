@@ -479,12 +479,16 @@ export function markdownToMindMap(
 	}
 
 	if (extra?.nodeIds) {
-		applySavedNodeIds(root, "0", extra.nodeIds);
+		walkNodePaths(root, (node, pathKey) => {
+			if (extra?.nodeIds?.[pathKey]) {
+				node.id = extra.nodeIds[pathKey];
+			}
+		});
 	}
 	finalizeNodeNotes(root);
 
 	const nodeLines: NodeLineEntry[] = [];
-	const collectNodeLines = (node: NodeObj, pathKey: string): void => {
+	walkNodePaths(root, (node, pathKey) => {
 		const line = nodeLineMap.get(node);
 		if (line !== undefined) {
 			nodeLines.push({
@@ -494,12 +498,7 @@ export function markdownToMindMap(
 				line,
 			});
 		}
-		const children = node.children ?? [];
-		for (let i = 0; i < children.length; i++) {
-			collectNodeLines(children[i], `${pathKey}.${i}`);
-		}
-	};
-	collectNodeLines(root, "0");
+	});
 
 	const preservedBlocks: PreservedMarkdownBlock[] = capturedBlocks.map((block) => {
 		const ancestorNodeIds: string[] = [];
@@ -534,6 +533,73 @@ export function markdownToMindMap(
 	};
 }
 
+interface BodyContentLine {
+	rawLine: string;
+	trimmed: string;
+	lineIndex: number;
+	fileLine: number;
+}
+
+/**
+ * Single shared body-token loop for both heading-list and pure-list Mind Map Notes:
+ * handles blank lines, preserved raw blocks, and Markdown blockquote (`>`) Node notes
+ * identically before delegating each structural Node line to the mode parser.
+ */
+function walkBodyTokens(
+	tokens: BodyToken[],
+	bodyStartLine: number,
+	capturedBlocks: CapturedPreservedBlock[],
+	onContentLine: (line: BodyContentLine) => NodeObj
+): void {
+	let lastNode: NodeObj | null = null;
+	let sawBlankSinceLastNote = false;
+
+	for (const token of tokens) {
+		if (token.kind === "blank") {
+			sawBlankSinceLastNote = true;
+			continue;
+		}
+
+		if (token.kind === "raw-block") {
+			capturedBlocks.push({
+				raw: token.raw,
+				anchorNode: lastNode,
+				blankBefore: token.blankBefore,
+				blankAfter: token.blankAfter,
+			});
+			sawBlankSinceLastNote = false;
+			continue;
+		}
+
+		const { raw: rawLine, lineIndex } = token;
+		const fileLine = bodyStartLine + lineIndex - 1;
+		const trimmed = rawLine.trim();
+
+		const quoteMatch = rawLine.match(/^\s*>(?:\s?(.*))?$/);
+		if (quoteMatch) {
+			if (lastNode) {
+				appendNoteLineToNode(
+					lastNode,
+					quoteMatch[1] ?? "",
+					sawBlankSinceLastNote && lastNode.note !== undefined
+				);
+			} else {
+				capturedBlocks.push({
+					raw: rawLine,
+					anchorNode: null,
+					blankBefore: false,
+					blankAfter: false,
+				});
+			}
+			sawBlankSinceLastNote = false;
+			continue;
+		}
+		sawBlankSinceLastNote = false;
+
+		lastNode = onContentLine({ rawLine, trimmed, lineIndex, fileLine });
+	}
+}
+
 function parseHeadingAndListBody(
 	tokens: BodyToken[],
 	fallbackTitle: string,
@@ -548,8 +614,6 @@ function parseHeadingAndListBody(
 	const headingStack: Array<{ level: number; node: NodeObj }> = [];
 	const listStack: Array<{ indent: number; node: NodeObj }> = [];
 	let currentHeadingParent: NodeObj | null = null;
-	let lastNode: NodeObj | null = null;
-	let sawBlankSinceLastNote = false;
 
 	const ensureRoot = (): NodeObj => {
 		if (!root) {
@@ -566,154 +630,115 @@ function parseHeadingAndListBody(
 		return root;
 	};
 
-	for (const token of tokens) {
-		if (token.kind === "blank") {
-			sawBlankSinceLastNote = true;
-			continue;
-		}
+	walkBodyTokens(
+		tokens,
+		bodyStartLine,
+		capturedBlocks,
+		({ rawLine, trimmed, lineIndex, fileLine }) => {
+			const headingMatch = rawLine.match(/^\s*(#{1,6})\s+(.+?)\s*#*$/);
+			if (headingMatch) {
+				const level = headingMatch[1].length;
+				const topic = unescapeTopic(headingMatch[2]);
+				listStack.length = 0;
 
-		if (token.kind === "raw-block") {
-			capturedBlocks.push({
-				raw: token.raw,
-				anchorNode: lastNode,
-				blankBefore: token.blankBefore,
-				blankAfter: token.blankAfter,
-			});
-			sawBlankSinceLastNote = false;
-			continue;
-		}
-
-		const { raw: rawLine, lineIndex } = token;
-		const fileLine = bodyStartLine + lineIndex - 1;
-		const trimmed = rawLine.trim();
-
-		const quoteMatch = rawLine.match(/^\s*>(?:\s?(.*))?$/);
-		if (quoteMatch) {
-			if (lastNode) {
-				appendNoteLineToNode(
-					lastNode,
-					quoteMatch[1] ?? "",
-					sawBlankSinceLastNote && lastNode.note !== undefined
-				);
-			} else {
-				capturedBlocks.push({
-					raw: rawLine,
-					anchorNode: null,
-					blankBefore: false,
-					blankAfter: false,
-				});
-			}
-			sawBlankSinceLastNote = false;
-			continue;
-		}
-		sawBlankSinceLastNote = false;
-
-		const headingMatch = rawLine.match(/^\s*(#{1,6})\s+(.+?)\s*#*$/);
-		if (headingMatch) {
-			const level = headingMatch[1].length;
-			const topic = unescapeTopic(headingMatch[2]);
-			listStack.length = 0;
-
-			if (level === 1 && (!root || isSyntheticRoot)) {
-				if (root && isSyntheticRoot) {
-					// Promote this real H1 to root instead of nesting it under a synthetic fallback root
-					root.topic = topic;
-					isSyntheticRoot = false;
-				} else {
-					root = {
-						id: makeDeterministicId(`h1:${topic}`, usedIds),
-						topic,
-						children: [],
-					};
-					parentMap.set(root, null);
-					isSyntheticRoot = false;
+				if (level === 1 && (!root || isSyntheticRoot)) {
+					if (root && isSyntheticRoot) {
+						// Promote this real H1 to root instead of nesting it under a synthetic fallback root
+						root.topic = topic;
+						isSyntheticRoot = false;
+					} else {
+						root = {
+							id: makeDeterministicId(`h1:${topic}`, usedIds),
+							topic,
+							children: [],
+						};
+						parentMap.set(root, null);
+						isSyntheticRoot = false;
+					}
+					nodeLineMap.set(root, fileLine);
+					headingStack.length = 0;
+					headingStack.push({ level: 1, node: root });
+					currentHeadingParent = root;
+					return root;
 				}
-				nodeLineMap.set(root, fileLine);
-				headingStack.length = 0;
-				headingStack.push({ level: 1, node: root });
-				currentHeadingParent = root;
-				lastNode = root;
-				continue;
+
+				const ensuredRoot = ensureRoot();
+				const node: NodeObj = {
+					id: makeDeterministicId(`h${level}:${lineIndex}:${topic}`, usedIds),
+					topic,
+					children: [],
+				};
+
+				while (
+					headingStack.length > 0 &&
+					headingStack[headingStack.length - 1].level >= level
+				) {
+					headingStack.pop();
+				}
+
+				const parent =
+					headingStack.length > 0
+						? headingStack[headingStack.length - 1].node
+						: ensuredRoot;
+				parent.children = parent.children ?? [];
+				parent.children.push(node);
+				parentMap.set(node, parent);
+				nodeLineMap.set(node, fileLine);
+
+				headingStack.push({ level, node });
+				currentHeadingParent = node;
+				return node;
 			}
 
-			const ensuredRoot = ensureRoot();
-			const node: NodeObj = {
-				id: makeDeterministicId(`h${level}:${lineIndex}:${topic}`, usedIds),
-				topic,
-				children: [],
-			};
+			const listMatch = rawLine.match(/^(\s*)[-*+]\s+(.*)$/);
+			if (listMatch) {
+				const indent = getIndentWidth(listMatch[1]);
+				const topic = unescapeTopic(listMatch[2]);
+				const baseParent = currentHeadingParent ?? ensureRoot();
 
-			while (
-				headingStack.length > 0 &&
-				headingStack[headingStack.length - 1].level >= level
-			) {
-				headingStack.pop();
+				const node: NodeObj = {
+					id: makeDeterministicId(`li:${lineIndex}:${topic}`, usedIds),
+					topic,
+					children: [],
+				};
+
+				while (
+					listStack.length > 0 &&
+					listStack[listStack.length - 1].indent >= indent
+				) {
+					listStack.pop();
+				}
+
+				const parent =
+					listStack.length > 0
+						? listStack[listStack.length - 1].node
+						: baseParent;
+				parent.children = parent.children ?? [];
+				parent.children.push(node);
+				parentMap.set(node, parent);
+				nodeLineMap.set(node, fileLine);
+
+				listStack.push({ indent, node });
+				return node;
 			}
 
-			const parent =
-				headingStack.length > 0
-					? headingStack[headingStack.length - 1].node
-					: ensuredRoot;
-			parent.children = parent.children ?? [];
-			parent.children.push(node);
-			parentMap.set(node, parent);
-			nodeLineMap.set(node, fileLine);
-
-			headingStack.push({ level, node });
-			currentHeadingParent = node;
-			lastNode = node;
-			continue;
-		}
-
-		const listMatch = rawLine.match(/^(\s*)[-*+]\s+(.*)$/);
-		if (listMatch) {
-			const indent = getIndentWidth(listMatch[1]);
-			const topic = unescapeTopic(listMatch[2]);
-			const baseParent = currentHeadingParent ?? ensureRoot();
-
-			const node: NodeObj = {
-				id: makeDeterministicId(`li:${lineIndex}:${topic}`, usedIds),
-				topic,
-				children: [],
-			};
-
-			while (
-				listStack.length > 0 &&
-				listStack[listStack.length - 1].indent >= indent
-			) {
-				listStack.pop();
-			}
-
+			// Plain paragraph line -> attach as child of current parent so nothing is lost
 			const parent =
 				listStack.length > 0
 					? listStack[listStack.length - 1].node
-					: baseParent;
+					: currentHeadingParent ?? ensureRoot();
+			const node: NodeObj = {
+				id: makeDeterministicId(`p:${lineIndex}:${trimmed}`, usedIds),
+				topic: unescapeTopic(trimmed),
+				children: [],
+			};
 			parent.children = parent.children ?? [];
 			parent.children.push(node);
 			parentMap.set(node, parent);
 			nodeLineMap.set(node, fileLine);
-
-			listStack.push({ indent, node });
-			lastNode = node;
-			continue;
+			return node;
 		}
-
-		// Plain paragraph line -> attach as child of current parent so nothing is lost
-		const parent =
-			listStack.length > 0
-				? listStack[listStack.length - 1].node
-				: currentHeadingParent ?? ensureRoot();
-		const node: NodeObj = {
-			id: makeDeterministicId(`p:${lineIndex}:${trimmed}`, usedIds),
-			topic: unescapeTopic(trimmed),
-			children: [],
-		};
-		parent.children = parent.children ?? [];
-		parent.children.push(node);
-		parentMap.set(node, parent);
-		nodeLineMap.set(node, fileLine);
-		lastNode = node;
-	}
+	);
 
 	return ensureRoot();
 }
@@ -729,82 +754,44 @@ function parsePureListBody(
 ): NodeObj {
 	const topNodes: NodeObj[] = [];
 	const listStack: Array<{ indent: number; node: NodeObj }> = [];
-	let lastNode: NodeObj | null = null;
-	let sawBlankSinceLastNote = false;
 
-	for (const token of tokens) {
-		if (token.kind === "blank") {
-			sawBlankSinceLastNote = true;
-			continue;
-		}
+	walkBodyTokens(
+		tokens,
+		bodyStartLine,
+		capturedBlocks,
+		({ rawLine, trimmed, lineIndex, fileLine }) => {
+			const listMatch = rawLine.match(/^(\s*)[-*+]\s+(.*)$/);
+			const indent = listMatch ? getIndentWidth(listMatch[1]) : 0;
+			const topic = unescapeTopic(listMatch ? listMatch[2] : trimmed);
 
-		if (token.kind === "raw-block") {
-			capturedBlocks.push({
-				raw: token.raw,
-				anchorNode: lastNode,
-				blankBefore: token.blankBefore,
-				blankAfter: token.blankAfter,
-			});
-			sawBlankSinceLastNote = false;
-			continue;
-		}
+			const node: NodeObj = {
+				id: makeDeterministicId(`list:${lineIndex}:${topic}`, usedIds),
+				topic,
+				children: [],
+			};
 
-		const { raw: rawLine, lineIndex } = token;
-		const fileLine = bodyStartLine + lineIndex - 1;
-		const trimmed = rawLine.trim();
-
-		const quoteMatch = rawLine.match(/^\s*>(?:\s?(.*))?$/);
-		if (quoteMatch) {
-			if (lastNode) {
-				appendNoteLineToNode(
-					lastNode,
-					quoteMatch[1] ?? "",
-					sawBlankSinceLastNote && lastNode.note !== undefined
-				);
-			} else {
-				capturedBlocks.push({
-					raw: rawLine,
-					anchorNode: null,
-					blankBefore: false,
-					blankAfter: false,
-				});
+			while (
+				listStack.length > 0 &&
+				listStack[listStack.length - 1].indent >= indent
+			) {
+				listStack.pop();
 			}
-			sawBlankSinceLastNote = false;
-			continue;
+
+			if (listStack.length === 0) {
+				topNodes.push(node);
+				parentMap.set(node, null);
+			} else {
+				const parent = listStack[listStack.length - 1].node;
+				parent.children = parent.children ?? [];
+				parent.children.push(node);
+				parentMap.set(node, parent);
+			}
+			nodeLineMap.set(node, fileLine);
+
+			listStack.push({ indent, node });
+			return node;
 		}
-		sawBlankSinceLastNote = false;
-
-		const listMatch = rawLine.match(/^(\s*)[-*+]\s+(.*)$/);
-		const indent = listMatch ? getIndentWidth(listMatch[1]) : 0;
-		const topic = unescapeTopic(listMatch ? listMatch[2] : trimmed);
-
-		const node: NodeObj = {
-			id: makeDeterministicId(`list:${lineIndex}:${topic}`, usedIds),
-			topic,
-			children: [],
-		};
-
-		while (
-			listStack.length > 0 &&
-			listStack[listStack.length - 1].indent >= indent
-		) {
-			listStack.pop();
-		}
-
-		if (listStack.length === 0) {
-			topNodes.push(node);
-			parentMap.set(node, null);
-		} else {
-			const parent = listStack[listStack.length - 1].node;
-			parent.children = parent.children ?? [];
-			parent.children.push(node);
-			parentMap.set(node, parent);
-		}
-		nodeLineMap.set(node, fileLine);
-
-		listStack.push({ indent, node });
-		lastNode = node;
-	}
+	);
 
 	if (topNodes.length === 0) {
 		const root: NodeObj = {
@@ -832,30 +819,54 @@ function parsePureListBody(
 	return root;
 }
 
-function applySavedNodeIds(
+export function walkNodePaths(
 	node: NodeObj,
-	pathKey: string,
-	nodeIds: Record<string, string>
+	visitor: (node: NodeObj, pathKey: string) => void,
+	pathKey = "0"
 ): void {
-	if (nodeIds[pathKey]) {
-		node.id = nodeIds[pathKey];
-	}
+	visitor(node, pathKey);
 	const children = node.children ?? [];
 	for (let i = 0; i < children.length; i++) {
-		applySavedNodeIds(children[i], `${pathKey}.${i}`, nodeIds);
+		walkNodePaths(children[i], visitor, `${pathKey}.${i}`);
 	}
 }
 
-function collectNodeIds(
-	node: NodeObj,
-	pathKey: string,
-	out: Record<string, string>
-): void {
-	out[pathKey] = node.id;
-	const children = node.children ?? [];
-	for (let i = 0; i < children.length; i++) {
-		collectNodeIds(children[i], `${pathKey}.${i}`, out);
+export function findNodePathKeyById(
+	root: NodeObj | null | undefined,
+	targetNodeId: string
+): string | null {
+	if (!root || !targetNodeId) return null;
+	let matched: string | null = null;
+	walkNodePaths(root, (node, pathKey) => {
+		if (matched === null && node.id === targetNodeId) {
+			matched = pathKey;
+		}
+	});
+	return matched;
+}
+
+export function resolveNodeByPathKey(
+	root: NodeObj | null | undefined,
+	pathKey: string
+): { node: NodeObj; ancestorIds: string[] } | null {
+	if (!root || !pathKey) return null;
+	const parts = pathKey.split(".");
+	if (parts[0] !== "0") return null;
+
+	let current: NodeObj = root;
+	const ancestorIds: string[] = [];
+
+	for (let i = 1; i < parts.length; i++) {
+		const idx = Number(parts[i]);
+		const children = current.children ?? [];
+		if (!Number.isInteger(idx) || idx < 0 || idx >= children.length) {
+			return null;
+		}
+		ancestorIds.push(current.id);
+		current = children[idx];
 	}
+
+	return { node: current, ancestorIds };
 }
 
 function upsertFrontmatterLines(
@@ -1042,7 +1053,9 @@ export function mindMapToMarkdown(
 	const hasSummaries = Boolean(data.summaries && data.summaries.length > 0);
 	if (hasArrows || hasSummaries) {
 		const nodeIds: Record<string, string> = {};
-		collectNodeIds(root, "0", nodeIds);
+		walkNodePaths(root, (node, pathKey) => {
+			nodeIds[pathKey] = node.id;
+		});
 		const extra: ExtraMetadata = {
 			arrows: data.arrows ?? [],
 			summaries: data.summaries ?? [],
@@ -1089,134 +1102,4 @@ function serializeAsList(
 	for (const child of children) {
 		serializeAsList(child, depth + 1, writer, blocksAfterNode);
 	}
-}
-
-function escapeHtml(text: string): string {
-	return text
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;")
-		.replace(/"/g, "&quot;");
-}
-
-function sanitizeUrl(url: string): string {
-	const trimmed = url.trim();
-	if (/^(https?:\/\/|obsidian:\/\/|app:\/\/|capacitor:\/\/|file:\/\/|data:image\/)/i.test(trimmed)) {
-		return trimmed;
-	}
-	return "";
-}
-
-/**
- * Renders inline Obsidian Markdown (wikilinks, embedded images, external links,
- * bold/italic/code/strikethrough/highlight/tags) to safe HTML for mind-elixir nodes.
- */
-export function renderNodeMarkdown(
-	raw: string,
-	resolveVaultImage?: (target: string) => string | null
-): string {
-	const placeholders: string[] = [];
-	const stash = (html: string): string => {
-		const token = `\uE000MM_${placeholders.length}\uE001`;
-		placeholders.push(html);
-		return token;
-	};
-
-	let text = raw;
-
-	// 1. Inline code first so syntax inside backticks is preserved literally
-	text = text.replace(/`([^`]+)`/g, (_m, code: string) => {
-		return stash(`<code class="mm-inline-code">${escapeHtml(code)}</code>`);
-	});
-
-	// 2. Obsidian image embeds: ![[image.png]] or ![[image.png|200]] or ![[image.png|200x120]]
-	text = text.replace(/!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_m, target: string, size?: string) => {
-		const cleanTarget = target.trim();
-		const resolved = resolveVaultImage ? resolveVaultImage(cleanTarget) : null;
-		if (!resolved) {
-			return stash(
-				`<span class="mm-broken-img" title="${escapeHtml(cleanTarget)}">🖼️ ${escapeHtml(cleanTarget)}</span>`
-			);
-		}
-		const sizeStyle = parseObsidianImageSize(size);
-		return stash(
-			`<img class="mm-node-img" src="${escapeHtml(resolved)}" alt="${escapeHtml(cleanTarget)}"${sizeStyle} draggable="false" />`
-		);
-	});
-
-	// 3. Standard Markdown images: ![alt](url)
-	text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_m, alt: string, rawUrl: string) => {
-		const trimmed = rawUrl.trim();
-		const resolved =
-			sanitizeUrl(trimmed) ||
-			(resolveVaultImage ? resolveVaultImage(trimmed) : null);
-		if (!resolved) {
-			return stash(`<span class="mm-broken-img">🖼️ ${escapeHtml(alt || trimmed)}</span>`);
-		}
-		return stash(
-			`<img class="mm-node-img" src="${escapeHtml(resolved)}" alt="${escapeHtml(alt)}" draggable="false" />`
-		);
-	});
-
-	// 4. Obsidian wikilinks: [[target]] or [[target|alias]]
-	text = text.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_m, target: string, alias?: string) => {
-		const cleanTarget = target.trim();
-		const label = (alias ?? cleanTarget).trim();
-		return stash(
-			`<a class="internal-link mm-wikilink" data-href="${escapeHtml(cleanTarget)}" href="${escapeHtml(cleanTarget)}">${escapeHtml(label)}</a>`
-		);
-	});
-
-	// 5. Standard Markdown links: [label](url)
-	text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label: string, rawUrl: string) => {
-		const safeUrl = sanitizeUrl(rawUrl);
-		if (!safeUrl) {
-			return escapeHtml(label);
-		}
-		return stash(
-			`<a class="external-link mm-extlink" href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`
-		);
-	});
-
-	// Escape remaining plain text
-	text = escapeHtml(text);
-
-	// 6. Inline text styles
-	text = text.replace(/\*\*\*(.+?)\*\*\*/g, "<strong><em>$1</em></strong>");
-	text = text.replace(/(^|[^*])\*([^*]+?)\*(?=\*\*[^*]+?\*\*)/g, "$1<em>$2</em>");
-	text = text.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-	text = text.replace(/__(.+?)__/g, "<strong>$1</strong>");
-	text = text.replace(/~~(.+?)~~/g, "<del>$1</del>");
-	text = text.replace(/==(.+?)==/g, '<mark class="mm-highlight">$1</mark>');
-	text = text.replace(/(^|[^*])\*([^*]+?)\*(?!\*)/g, "$1<em>$2</em>");
-
-	// 7. Inline Obsidian tags (#tag)
-	text = text.replace(
-		/(^|[\s(])#([A-Za-z0-9_\-/\u4e00-\u9fa5]+)/g,
-		'$1<span class="mm-tag">#$2</span>'
-	);
-
-	// 8. Preserve explicit line breaks
-	text = text.replace(/\r?\n/g, "<br>");
-
-	// Restore stashed HTML tokens
-	text = text.replace(/\uE000MM_(\d+)\uE001/g, (_m, idxStr: string) => {
-		return placeholders[Number(idxStr)] ?? "";
-	});
-
-	return text;
-}
-
-function parseObsidianImageSize(size?: string): string {
-	if (!size) return "";
-	const trimmed = size.trim();
-	const whMatch = trimmed.match(/^(\d+)x(\d+)$/i);
-	if (whMatch) {
-		return ` style="width:${whMatch[1]}px;height:${whMatch[2]}px"`;
-	}
-	const wMatch = trimmed.match(/^(\d+)$/);
-	if (wMatch) {
-		return ` style="width:${wMatch[1]}px;height:auto"`;
-	}
-	return "";
 }

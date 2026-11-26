@@ -1,3 +1,8 @@
+import {
+	normalizeExternalUrlInput,
+	type RichMarkKind,
+} from "../parser/inlineNodeContent";
+
 const IMAGE_EXTENSIONS = new Set([
 	"png",
 	"jpg",
@@ -68,6 +73,70 @@ export type SuggesterKeyAction = "handled" | "ignored";
 export interface SelectedNodeSnapshot<TNodeRef> {
 	node: TNodeRef;
 	topic: string;
+}
+
+export interface PendingExternalLinkState {
+	fullText: string;
+	selection: SelectionRange;
+	label: string;
+}
+
+export type FormatToolbarVisibility = "hidden" | "format-bar" | "url-bar";
+
+export function resolveRichShortcutMark(evt: {
+	ctrlKey: boolean;
+	metaKey: boolean;
+	altKey: boolean;
+	shiftKey: boolean;
+	key: string;
+}): RichMarkKind | null {
+	if (!(evt.ctrlKey || evt.metaKey) || evt.altKey) return null;
+	const lower = evt.key.toLowerCase();
+	if (lower === "b" && !evt.shiftKey) return "bold";
+	if (lower === "i" && !evt.shiftKey) return "italic";
+	if (lower === "e" && !evt.shiftKey) return "code";
+	if (lower === "x" && evt.shiftKey) return "strikethrough";
+	if (lower === "h" && evt.shiftKey) return "highlight";
+	return null;
+}
+
+export function insertImageEmbedIntoText(
+	text: string,
+	selection: SelectionRange,
+	fileName: string
+): TextEditResult {
+	const safeStart = Math.max(0, Math.min(selection.start, text.length));
+	const safeEnd = Math.max(safeStart, Math.min(selection.end, text.length));
+	const before = text.slice(0, safeStart);
+	const needsLeadingBreak = before.length > 0 && !before.endsWith("\n");
+	const insertion = `${needsLeadingBreak ? "\n" : ""}![[${fileName}]]`;
+	return replaceTextRange(text, safeStart, safeEnd, insertion);
+}
+
+export function decideTextBlurAction(params: {
+	relatedInsideCard: boolean;
+	relatedInsidePopup: boolean;
+	relatedInsideToolbar: boolean;
+	hasPendingExternalLink: boolean;
+}): "keep-editing" | "commit" {
+	if (
+		params.relatedInsideCard ||
+		params.relatedInsidePopup ||
+		params.relatedInsideToolbar ||
+		params.hasPendingExternalLink
+	) {
+		return "keep-editing";
+	}
+	return "commit";
+}
+
+export function decideUrlBarBlurAction(params: {
+	relatedInsideToolbar: boolean;
+	relatedInsideCard: boolean;
+}): "keep-url-bar" | "cancel-to-editor" | "cancel-and-commit" {
+	if (params.relatedInsideToolbar) return "keep-url-bar";
+	if (params.relatedInsideCard) return "cancel-to-editor";
+	return "cancel-and-commit";
 }
 
 export interface NodeInlineEditorAdapter<TFileRef, TNodeRef> {
@@ -290,6 +359,7 @@ export class NodeInlineEditorSession<TFileRef, TNodeRef> {
 	private selectedIndex = 0;
 	private lastTriggerKey: string | null = null;
 	private lastQueryKey: string | null = null;
+	private pendingExternalLink: PendingExternalLinkState | null = null;
 
 	constructor(adapter: NodeInlineEditorAdapter<TFileRef, TNodeRef>) {
 		this.adapter = adapter;
@@ -297,6 +367,72 @@ export class NodeInlineEditorSession<TFileRef, TNodeRef> {
 
 	public isSuggesterOpen(): boolean {
 		return this.activeMatch !== null && this.candidates.length > 0;
+	}
+
+	public hasPendingExternalLink(): boolean {
+		return this.pendingExternalLink !== null;
+	}
+
+	public getPendingExternalLink(): PendingExternalLinkState | null {
+		return this.pendingExternalLink;
+	}
+
+	public resolveFormatToolbarVisibility(params: {
+		isRichEditing: boolean;
+		isPointerSelecting: boolean;
+		hasNonEmptySelection: boolean;
+	}): FormatToolbarVisibility {
+		if (!params.isRichEditing) return "hidden";
+		if (params.isPointerSelecting) return "hidden";
+		if (this.pendingExternalLink) return "url-bar";
+		if (this.isSuggesterOpen()) return "hidden";
+		return params.hasNonEmptySelection ? "format-bar" : "hidden";
+	}
+
+	public beginExternalLink(
+		fullText: string,
+		selection: SelectionRange,
+		defaultLabel = "链接"
+	): PendingExternalLinkState {
+		const safeStart = Math.max(0, Math.min(selection.start, fullText.length));
+		const safeEnd = Math.max(safeStart, Math.min(selection.end, fullText.length));
+		const label = fullText.slice(safeStart, safeEnd).trim() || defaultLabel;
+		this.pendingExternalLink = {
+			fullText,
+			selection: { start: safeStart, end: safeEnd },
+			label,
+		};
+		return this.pendingExternalLink;
+	}
+
+	public confirmExternalLink(
+		rawUrl: string
+	): { ok: true; text: string; selection: SelectionRange } | { ok: false } {
+		const pending = this.pendingExternalLink;
+		if (!pending) return { ok: false };
+
+		const normalized = normalizeExternalUrlInput(rawUrl);
+		if (!normalized) return { ok: false };
+
+		this.pendingExternalLink = null;
+		const mdLink = `[${pending.label}](${normalized})`;
+		const edited = replaceTextRange(
+			pending.fullText,
+			pending.selection.start,
+			pending.selection.end,
+			mdLink
+		);
+		return {
+			ok: true,
+			text: edited.text,
+			selection: { start: edited.caretStart, end: edited.caretEnd },
+		};
+	}
+
+	public cancelExternalLink(): PendingExternalLinkState | null {
+		const pending = this.pendingExternalLink;
+		this.pendingExternalLink = null;
+		return pending;
 	}
 
 	public refreshSuggester(): void {
@@ -430,10 +566,12 @@ export class NodeInlineEditorSession<TFileRef, TNodeRef> {
 	}
 
 	public onInputBlur(): void {
+		this.pendingExternalLink = null;
 		this.closeSuggester();
 	}
 
 	public commitActiveEdit(): void {
+		this.pendingExternalLink = null;
 		this.closeSuggester();
 		this.adapter.blurInputBox();
 	}

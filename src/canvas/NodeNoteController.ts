@@ -7,30 +7,45 @@ import {
 import type MindElixir from "mind-elixir";
 import type { NodeObj, Topic } from "mind-elixir";
 import { normalizeNoteText } from "../parser/markdownParser";
-import { extractSearchableNodeText } from "./nodeSearch";
+import { extractNodeDisplayTitle } from "../parser/inlineNodeContent";
 import { NoteMarkdownEditor } from "./NoteMarkdownEditor";
+import {
+	NodeNoteSession,
+	type NoteNodeSnapshot,
+	type NotePanelMode,
+} from "./NodeNoteSession";
 
 export interface NodeNoteHost {
 	getMind: () => MindElixir | null;
 	getSourcePath: () => string;
+	openInternalLink: (href: string, openInNewTab: boolean) => void;
 	onNoteChanged: () => void;
 	onLayoutChanged: () => void;
 	onPanelStateChanged?: (isOpen: boolean) => void;
 }
 
-const SAVE_DEBOUNCE_MS = 250;
-const HOVER_SHOW_DELAY_MS = 180;
-const HOVER_HIDE_DELAY_MS = 160;
+/**
+ * Single seam predicate so external event listeners (Split View cursor sync,
+ * global Ctrl+F) never need to know private Node Note DOM class names.
+ */
+export function isEventInsideNodeNoteSurface(
+	target: EventTarget | null
+): boolean {
+	if (!target || typeof target !== "object") return false;
+	const el = target as HTMLElement;
+	return Boolean(el.closest?.(".mm-note-panel, .mm-note-preview"));
+}
 
 /**
- * Manages per-node Markdown notes (sticky notes) inside MindMapView:
- * - Renders an inline sticky-note indicator badge on nodes that have notes
- * - Shows a native Obsidian Markdown hover preview popover over badges
- * - Provides a floating right-side editor/preview card with auto-save
+ * Obsidian UI adapter for NodeNoteSession:
+ * - Renders inline sticky-note badges on MindElixir Nodes
+ * - Hosts the floating right-side NoteMarkdownEditor (Live Preview / fallback)
+ * - Renders Markdown hover preview popovers via Obsidian's MarkdownRenderer
  */
 export class NodeNoteController {
 	private app: App;
 	private host: NodeNoteHost;
+	private session: NodeNoteSession;
 	private containerEl: HTMLElement | null = null;
 
 	// Floating editor panel elements
@@ -46,17 +61,7 @@ export class NodeNoteController {
 	private hoverEl: HTMLElement | null = null;
 	private hoverTitleEl: HTMLElement | null = null;
 	private hoverBodyEl: HTMLElement | null = null;
-
-	// State
-	private activeNodeId: string | null = null;
-	private panelMode: "edit" | "preview" = "edit";
-	private isPanelOpen = false;
-	private saveTimer: number | null = null;
-	private lastSavedRaw: string | null = null;
-
-	private hoveredNodeId: string | null = null;
-	private hoverShowTimer: number | null = null;
-	private hoverHideTimer: number | null = null;
+	private hoverAnchorEl: HTMLElement | null = null;
 
 	private panelRenderComp: Component | null = null;
 	private hoverRenderComp: Component | null = null;
@@ -64,6 +69,71 @@ export class NodeNoteController {
 	constructor(app: App, host: NodeNoteHost) {
 		this.app = app;
 		this.host = host;
+		this.session = new NodeNoteSession({
+			getNode: (nodeId) => this.readNodeSnapshot(nodeId),
+			getSelectedNodeId: () =>
+				this.host.getMind()?.currentNode?.nodeObj?.id ?? null,
+			getFallbackRootNodeId: () =>
+				this.host.getMind()?.nodeData?.id ?? null,
+			selectNode: (nodeId) => {
+				const mind = this.host.getMind();
+				if (!mind) return;
+				try {
+					const tpc = mind.findEle(nodeId);
+					if (tpc && mind.currentNode !== tpc) {
+						mind.selectNode(tpc);
+					}
+				} catch {
+					// Ignore if node is not currently mounted
+				}
+			},
+			writeNodeNote: (nodeId, normalizedNote) => {
+				this.applyNoteToMind(nodeId, normalizedNote);
+			},
+			showPanel: (_node, mode, focusEditor) => {
+				this.panelEl?.removeClass("mm-is-hidden");
+				if (mode === "edit" && focusEditor) {
+					this.noteEditor?.focusEnd();
+				}
+			},
+			hidePanel: (restoreCanvasFocus) => {
+				this.panelEl?.addClass("mm-is-hidden");
+				this.unloadRenderComp("panel");
+				if (restoreCanvasFocus) {
+					this.host.getMind()?.container?.focus();
+				}
+			},
+			updatePanelHeader: (node) => {
+				this.renderPanelHeader(node.topic);
+			},
+			applyPanelMode: (mode, previewMarkdown) => {
+				this.renderPanelMode(mode, previewMarkdown);
+			},
+			setEditorValue: (value, clearHistory) => {
+				this.noteEditor?.setValue(value, clearHistory);
+			},
+			getEditorValue: () => this.noteEditor?.getValue() ?? "",
+			isEditorFocused: () => Boolean(this.noteEditor?.isFocused()),
+			focusEditor: () => {
+				this.noteEditor?.focusEnd();
+			},
+			updateClearButton: (hasContent) => {
+				this.clearBtnEl?.toggleClass("mm-is-hidden", !hasContent);
+			},
+			onPanelStateChanged: (isOpen) => {
+				this.host.onPanelStateChanged?.(isOpen);
+			},
+			showHoverPreview: (node) => {
+				this.renderHoverPreview(node);
+			},
+			hideHoverPreview: () => {
+				this.hoverEl?.addClass("mm-is-hidden");
+				this.hoverAnchorEl = null;
+				this.unloadRenderComp("hover");
+			},
+			scheduleTimer: (fn, delayMs) => window.setTimeout(fn, delayMs),
+			cancelTimer: (handle) => window.clearTimeout(Number(handle)),
+		});
 	}
 
 	public attach(container: HTMLElement): void {
@@ -74,9 +144,7 @@ export class NodeNoteController {
 	}
 
 	public detach(): void {
-		this.flushPendingSave();
-		this.clearHoverTimers();
-		this.hideHoverPreview();
+		this.session.dispose();
 		this.unloadRenderComp("panel");
 		this.unloadRenderComp("hover");
 		if (this.noteEditor) {
@@ -98,121 +166,44 @@ export class NodeNoteController {
 		this.panelPreviewEl = null;
 		this.hoverTitleEl = null;
 		this.hoverBodyEl = null;
+		this.hoverAnchorEl = null;
 		this.containerEl = null;
-		this.activeNodeId = null;
-		this.isPanelOpen = false;
 	}
 
 	public isOpen(): boolean {
-		return this.isPanelOpen;
+		return this.session.isOpen();
 	}
 
 	public openForSelectedNode(): void {
-		const mind = this.host.getMind();
-		if (!mind) return;
-		const targetEl =
-			mind.currentNode ??
-			mind.nodes.querySelector<Topic>(".me-root > .me-tpc");
-		if (!targetEl?.nodeObj) return;
-		this.openForNode(targetEl.nodeObj.id, "edit");
+		this.session.openForSelectedNode();
 	}
 
 	public toggleForSelectedNode(): void {
-		const mind = this.host.getMind();
-		if (!mind) return;
-		const selectedId = mind.currentNode?.nodeObj?.id ?? null;
-		if (this.isPanelOpen && selectedId && this.activeNodeId === selectedId) {
-			this.close(true);
-			return;
-		}
-		this.openForSelectedNode();
+		this.session.toggleForSelectedNode();
 	}
 
-	public openForNode(
-		nodeId: string,
-		mode: "edit" | "preview" = "edit"
-	): void {
-		const mind = this.host.getMind();
-		if (!mind || !this.panelEl || !this.noteEditor) return;
-
-		const node = this.findNodeObjById(mind.nodeData, nodeId);
-		if (!node) return;
-
-		if (this.activeNodeId && this.activeNodeId !== nodeId) {
-			this.flushPendingSave();
-		}
-
-		this.hideHoverPreview();
-		this.activeNodeId = node.id;
-		this.isPanelOpen = true;
-		this.panelMode = mode;
-
-		// Ensure the owning node is selected on canvas so the user clearly sees context
-		try {
-			const tpc = mind.findEle(node.id);
-			if (tpc && mind.currentNode !== tpc) {
-				mind.selectNode(tpc);
-			}
-		} catch {
-			// Ignore if node is not currently mounted
-		}
-
-		this.populatePanelFromNode(node);
-		this.panelEl.removeClass("mm-is-hidden");
-		this.applyPanelMode();
-		this.host.onPanelStateChanged?.(true);
-
-		if (mode === "edit") {
-			this.noteEditor.focusEnd();
-		}
+	public openForNode(nodeId: string, mode: NotePanelMode = "edit"): void {
+		this.session.openForNode(nodeId, mode);
 	}
 
 	public close(restoreCanvasFocus = false): void {
-		this.flushPendingSave();
-		if (!this.isPanelOpen) return;
-		this.isPanelOpen = false;
-		this.activeNodeId = null;
-		this.lastSavedRaw = null;
-		this.panelEl?.addClass("mm-is-hidden");
-		this.unloadRenderComp("panel");
-		this.host.onPanelStateChanged?.(false);
-		if (restoreCanvasFocus) {
-			this.host.getMind()?.container?.focus();
-		}
+		this.session.close(restoreCanvasFocus);
+	}
+
+	public flushPendingSave(): void {
+		this.session.flushPendingSave();
 	}
 
 	public onCanvasSelectionChanged(mind: MindElixir): void {
-		if (!this.isPanelOpen) return;
 		if (mind.currentNodes.length !== 1 || !mind.currentNode?.nodeObj) {
 			return;
 		}
-		const nextNode = mind.currentNode.nodeObj;
-		if (nextNode.id === this.activeNodeId) {
-			this.updatePanelHeader(nextNode);
-			return;
-		}
-		this.flushPendingSave();
-		this.activeNodeId = nextNode.id;
-		this.populatePanelFromNode(nextNode);
-		this.applyPanelMode();
+		this.session.onCanvasSelectionChanged(mind.currentNode.nodeObj.id);
 	}
 
 	public onExternalRefresh(mind: MindElixir): void {
 		this.syncBadges(mind);
-		if (!this.isPanelOpen || !this.activeNodeId) return;
-		const node = this.findNodeObjById(mind.nodeData, this.activeNodeId);
-		if (!node) {
-			this.close(false);
-			return;
-		}
-		if (this.noteEditor && !this.noteEditor.isFocused()) {
-			this.populatePanelFromNode(node);
-			if (this.panelMode === "preview") {
-				this.renderPanelPreview();
-			}
-		} else {
-			this.updatePanelHeader(node);
-		}
+		this.session.onExternalRefresh();
 	}
 
 	public syncBadges(mind: MindElixir): void {
@@ -243,13 +234,45 @@ export class NodeNoteController {
 		}
 	}
 
-	public flushPendingSave(): void {
-		if (this.saveTimer !== null) {
-			window.clearTimeout(this.saveTimer);
-			this.saveTimer = null;
+	private readNodeSnapshot(nodeId: string): NoteNodeSnapshot | null {
+		const mind = this.host.getMind();
+		if (!mind) return null;
+		const node = this.findNodeObjById(mind.nodeData, nodeId);
+		if (!node) return null;
+		return {
+			id: node.id,
+			topic: node.topic ?? "",
+			note: node.note ?? "",
+		};
+	}
+
+	private applyNoteToMind(nodeId: string, normalized: string): void {
+		const mind = this.host.getMind();
+		if (!mind) return;
+		const node = this.findNodeObjById(mind.nodeData, nodeId);
+		if (!node) return;
+
+		if (normalized) {
+			node.note = normalized;
+		} else {
+			delete node.note;
 		}
-		if (!this.isPanelOpen || !this.activeNodeId || !this.noteEditor) return;
-		this.commitNoteValue(this.activeNodeId, this.noteEditor.getValue());
+
+		try {
+			const tpc = mind.findEle(nodeId);
+			if (tpc?.nodeObj && tpc.nodeObj !== node) {
+				if (normalized) {
+					tpc.nodeObj.note = normalized;
+				} else {
+					delete tpc.nodeObj.note;
+				}
+			}
+		} catch {
+			// Ignore unmounted node
+		}
+
+		this.syncBadges(mind);
+		this.host.onNoteChanged();
 	}
 
 	private createBadgeElement(nodeId: string): HTMLElement {
@@ -264,36 +287,28 @@ export class NodeNoteController {
 		setIcon(badge, "sticky-note");
 
 		const stop = (evt: Event) => {
+			evt.preventDefault();
 			evt.stopPropagation();
 		};
-		badge.addEventListener("pointerdown", (evt) => {
-			evt.preventDefault();
-			evt.stopPropagation();
-		});
-		badge.addEventListener("mousedown", (evt) => {
-			evt.preventDefault();
-			evt.stopPropagation();
-		});
-		badge.addEventListener("dblclick", (evt) => {
-			evt.preventDefault();
-			evt.stopPropagation();
-		});
+		badge.addEventListener("pointerdown", stop);
+		badge.addEventListener("mousedown", stop);
+		badge.addEventListener("dblclick", stop);
 		badge.addEventListener("click", (evt) => {
-			evt.preventDefault();
 			stop(evt);
 			const id = badge.dataset.nodeId;
 			if (id) {
-				this.openForNode(id, "edit");
+				this.session.openForNode(id, "edit");
 			}
 		});
 		badge.addEventListener("mouseenter", () => {
 			const id = badge.dataset.nodeId;
 			if (id) {
-				this.scheduleShowHoverPreview(id, badge);
+				this.hoverAnchorEl = badge;
+				this.session.onBadgeMouseEnter(id);
 			}
 		});
 		badge.addEventListener("mouseleave", () => {
-			this.scheduleHideHoverPreview();
+			this.session.onBadgeMouseLeave();
 		});
 		return badge;
 	}
@@ -319,9 +334,7 @@ export class NodeNoteController {
 		});
 		setIcon(editBtn, "pencil");
 		editBtn.addEventListener("click", () => {
-			this.panelMode = "edit";
-			this.applyPanelMode();
-			this.noteEditor?.focusEnd();
+			this.session.setMode("edit");
 		});
 
 		const previewBtn = actions.createEl("button", {
@@ -334,9 +347,7 @@ export class NodeNoteController {
 		});
 		setIcon(previewBtn, "eye");
 		previewBtn.addEventListener("click", () => {
-			this.flushPendingSave();
-			this.panelMode = "preview";
-			this.applyPanelMode();
+			this.session.setMode("preview");
 		});
 
 		const clearBtn = actions.createEl("button", {
@@ -349,14 +360,7 @@ export class NodeNoteController {
 		});
 		setIcon(clearBtn, "trash-2");
 		clearBtn.addEventListener("click", () => {
-			if (!this.noteEditor || !this.activeNodeId) return;
-			this.noteEditor.setValue("", false);
-			this.commitNoteValue(this.activeNodeId, "");
-			if (this.panelMode === "preview") {
-				this.renderPanelPreview();
-			} else {
-				this.noteEditor.focusEnd();
-			}
+			this.session.clearActiveNote();
 		});
 
 		const closeBtn = actions.createEl("button", {
@@ -369,7 +373,7 @@ export class NodeNoteController {
 		});
 		setIcon(closeBtn, "x");
 		closeBtn.addEventListener("click", () => {
-			this.close(true);
+			this.session.close(true);
 		});
 
 		const body = panel.createDiv({ cls: "mm-note-panel-body" });
@@ -379,14 +383,13 @@ export class NodeNoteController {
 			placeholder:
 				"在此输入节点备注（支持实时预览、标题、列表、代码块、[[双链]] 等）...",
 			onChange: (value) => {
-				this.updateClearButtonVisibility(value);
-				this.scheduleSave();
+				this.session.onEditorInput(value);
 			},
 			onBlur: () => {
-				this.flushPendingSave();
+				this.session.flushPendingSave();
 			},
 			onEscape: () => {
-				this.close(true);
+				this.session.close(true);
 			},
 		});
 
@@ -395,8 +398,6 @@ export class NodeNoteController {
 		});
 		this.bindRenderedLinkClicks(preview);
 
-		// Native Live Preview already renders Markdown inline while editing,
-		// so hide the redundant Edit/Preview mode toggles unless running in textarea fallback.
 		const isNative = noteEditor.isNativeLivePreview();
 		editBtn.toggleClass("mm-is-hidden", isNative);
 		previewBtn.toggleClass("mm-is-hidden", isNative);
@@ -420,18 +421,11 @@ export class NodeNoteController {
 
 	private buildHoverPreview(container: HTMLElement): void {
 		const hover = container.createDiv({ cls: "mm-note-preview mm-is-hidden" });
-		const stopProp = (evt: Event) => {
-			evt.stopPropagation();
-		};
-		hover.addEventListener("pointerdown", stopProp);
-		hover.addEventListener("mousedown", stopProp);
-		hover.addEventListener("click", stopProp);
-		hover.addEventListener("wheel", stopProp, { passive: true });
 		hover.addEventListener("mouseenter", () => {
-			this.clearHoverHideTimer();
+			this.session.onPreviewMouseEnter();
 		});
 		hover.addEventListener("mouseleave", () => {
-			this.scheduleHideHoverPreview();
+			this.session.onPreviewMouseLeave();
 		});
 
 		const header = hover.createDiv({ cls: "mm-note-preview-header" });
@@ -448,11 +442,7 @@ export class NodeNoteController {
 		editBtn.addEventListener("click", (evt) => {
 			evt.preventDefault();
 			evt.stopPropagation();
-			const id = this.hoveredNodeId;
-			this.hideHoverPreview();
-			if (id) {
-				this.openForNode(id, "edit");
-			}
+			this.session.openHoveredForEdit();
 		});
 
 		const body = hover.createDiv({
@@ -474,59 +464,30 @@ export class NodeNoteController {
 			evt.stopPropagation();
 			const href = link.dataset.href || link.getAttribute("href");
 			if (href) {
-				const openInNewTab = evt.ctrlKey || evt.metaKey;
-				void this.app.workspace.openLinkText(
-					href,
-					this.host.getSourcePath(),
-					openInNewTab
-				);
+				this.host.openInternalLink(href, evt.ctrlKey || evt.metaKey);
 			}
 		});
 	}
 
-	private populatePanelFromNode(node: NodeObj): void {
-		this.updatePanelHeader(node);
-		const noteText = node.note ?? "";
-		this.lastSavedRaw = normalizeNoteText(noteText);
-		this.noteEditor?.setValue(noteText, true);
-		this.updateClearButtonVisibility(noteText);
-	}
-
-	private updatePanelHeader(node: NodeObj): void {
+	private renderPanelHeader(topic: string): void {
 		if (!this.panelTitleEl) return;
-		const displayTopic =
-			extractSearchableNodeText(node.topic || "未命名节点")
-				.replace(/\s+/g, " ")
-				.trim() || "未命名节点";
+		const displayTopic = extractNodeDisplayTitle(topic, "未命名节点");
 		this.panelTitleEl.setText(displayTopic);
 		this.panelTitleEl.setAttribute("title", displayTopic);
 	}
 
-	private updateClearButtonVisibility(value: string): void {
-		this.clearBtnEl?.toggleClass(
-			"mm-is-hidden",
-			normalizeNoteText(value).length === 0
-		);
-	}
-
-	private applyPanelMode(): void {
-		const isPreview = this.panelMode === "preview";
+	private renderPanelMode(mode: NotePanelMode, previewMarkdown: string): void {
+		const isPreview = mode === "preview";
 		this.editModeBtnEl?.toggleClass("is-active", !isPreview);
 		this.previewModeBtnEl?.toggleClass("is-active", isPreview);
 		this.noteEditor?.setVisible(!isPreview);
 		this.panelPreviewEl?.toggleClass("mm-is-hidden", !isPreview);
-		if (isPreview) {
-			this.renderPanelPreview();
-		}
-	}
+		if (!isPreview || !this.panelPreviewEl) return;
 
-	private renderPanelPreview(): void {
-		if (!this.panelPreviewEl) return;
 		this.unloadRenderComp("panel");
 		this.panelPreviewEl.empty();
 
-		const text = normalizeNoteText(this.noteEditor?.getValue() ?? "");
-		if (!text) {
+		if (!previewMarkdown) {
 			this.panelPreviewEl.createDiv({
 				cls: "mm-note-empty-hint",
 				text: "暂无备注内容",
@@ -539,106 +500,26 @@ export class NodeNoteController {
 		this.panelRenderComp = comp;
 		void MarkdownRenderer.render(
 			this.app,
-			text,
+			previewMarkdown,
 			this.panelPreviewEl,
 			this.host.getSourcePath(),
 			comp
 		);
 	}
 
-	private scheduleSave(): void {
-		if (this.saveTimer !== null) {
-			window.clearTimeout(this.saveTimer);
-		}
-		this.saveTimer = window.setTimeout(() => {
-			this.saveTimer = null;
-			if (!this.activeNodeId || !this.noteEditor) return;
-			this.commitNoteValue(this.activeNodeId, this.noteEditor.getValue());
-		}, SAVE_DEBOUNCE_MS);
-	}
-
-	private commitNoteValue(nodeId: string, rawValue: string): void {
-		const mind = this.host.getMind();
-		if (!mind) return;
-		const normalized = normalizeNoteText(rawValue);
-		if (normalized === this.lastSavedRaw) return;
-
-		const node = this.findNodeObjById(mind.nodeData, nodeId);
-		if (!node) return;
-
-		if (normalized) {
-			node.note = normalized;
-		} else {
-			delete node.note;
-		}
-
-		// Sync live DOM node reference too in case mind.nodeData and Topic.nodeObj diverged
-		try {
-			const tpc = mind.findEle(nodeId);
-			if (tpc?.nodeObj && tpc.nodeObj !== node) {
-				if (normalized) {
-					tpc.nodeObj.note = normalized;
-				} else {
-					delete tpc.nodeObj.note;
-				}
-			}
-		} catch {
-			// Ignore unmounted node
-		}
-
-		this.lastSavedRaw = normalized;
-		this.updateClearButtonVisibility(normalized);
-		this.syncBadges(mind);
-		this.host.onNoteChanged();
-	}
-
-	private scheduleShowHoverPreview(
-		nodeId: string,
-		anchorEl: HTMLElement
-	): void {
-		if (this.isPanelOpen && this.activeNodeId === nodeId) {
-			return;
-		}
-		this.clearHoverTimers();
-		this.hoverShowTimer = window.setTimeout(() => {
-			this.hoverShowTimer = null;
-			this.showHoverPreview(nodeId, anchorEl);
-		}, HOVER_SHOW_DELAY_MS);
-	}
-
-	private scheduleHideHoverPreview(): void {
-		this.clearHoverShowTimer();
-		this.clearHoverHideTimer();
-		this.hoverHideTimer = window.setTimeout(() => {
-			this.hoverHideTimer = null;
-			this.hideHoverPreview();
-		}, HOVER_HIDE_DELAY_MS);
-	}
-
-	private showHoverPreview(nodeId: string, anchorEl: HTMLElement): void {
-		const mind = this.host.getMind();
+	private renderHoverPreview(node: NoteNodeSnapshot): void {
+		const anchorEl = this.hoverAnchorEl;
 		if (
-			!mind ||
 			!this.containerEl ||
 			!this.hoverEl ||
 			!this.hoverTitleEl ||
 			!this.hoverBodyEl ||
-			!anchorEl.isConnected
+			!anchorEl?.isConnected
 		) {
 			return;
 		}
 
-		const node = this.findNodeObjById(mind.nodeData, nodeId);
-		const noteText = normalizeNoteText(node?.note);
-		if (!node || !noteText) return;
-
-		this.hoveredNodeId = nodeId;
-		const displayTopic =
-			extractSearchableNodeText(node.topic || "备注")
-				.replace(/\s+/g, " ")
-				.trim() || "备注";
-		this.hoverTitleEl.setText(displayTopic);
-
+		this.hoverTitleEl.setText(extractNodeDisplayTitle(node.topic, "备注"));
 		this.unloadRenderComp("hover");
 		this.hoverBodyEl.empty();
 		const comp = new Component();
@@ -646,7 +527,7 @@ export class NodeNoteController {
 		this.hoverRenderComp = comp;
 		void MarkdownRenderer.render(
 			this.app,
-			noteText,
+			node.note,
 			this.hoverBodyEl,
 			this.host.getSourcePath(),
 			comp
@@ -675,31 +556,6 @@ export class NodeNoteController {
 			"--mm-note-preview-top": `${Math.round(top)}px`,
 			"--mm-note-preview-width": `${Math.round(cardWidth)}px`,
 		});
-	}
-
-	private hideHoverPreview(): void {
-		this.hoveredNodeId = null;
-		this.hoverEl?.addClass("mm-is-hidden");
-		this.unloadRenderComp("hover");
-	}
-
-	private clearHoverShowTimer(): void {
-		if (this.hoverShowTimer !== null) {
-			window.clearTimeout(this.hoverShowTimer);
-			this.hoverShowTimer = null;
-		}
-	}
-
-	private clearHoverHideTimer(): void {
-		if (this.hoverHideTimer !== null) {
-			window.clearTimeout(this.hoverHideTimer);
-			this.hoverHideTimer = null;
-		}
-	}
-
-	private clearHoverTimers(): void {
-		this.clearHoverShowTimer();
-		this.clearHoverHideTimer();
 	}
 
 	private unloadRenderComp(kind: "panel" | "hover"): void {

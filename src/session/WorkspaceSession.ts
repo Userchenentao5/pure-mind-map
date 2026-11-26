@@ -1,9 +1,11 @@
 import { hasMindMapFrontmatter } from "../parser/markdownParser";
+import { MarkdownLineIndexCache } from "../parser/MindMapDocument";
 import {
-	findMarkdownLineForNodePath,
-	findNodePathForMarkdownLine,
-} from "../parser/nodeLineMap";
-import { MINDMAP_VIEW_TYPE, type SplitLayout } from "../settings/types";
+	MINDMAP_VIEW_TYPE,
+	SPLIT_LEFT_RIGHT_ICON_ID,
+	SPLIT_TOP_BOTTOM_ICON_ID,
+	type SplitLayout,
+} from "../settings/types";
 
 export type ObsidianSplitDirection = "vertical" | "horizontal";
 export type SessionTimerHandle = ReturnType<typeof setTimeout> | number;
@@ -29,6 +31,16 @@ export interface SplitState<TLeaf extends object> {
 	isActive: boolean;
 	layout: SplitLayout | null;
 	counterpartLeaf: TLeaf | null;
+}
+
+export interface SplitActionDescriptor {
+	isActive: boolean;
+	layout: SplitLayout | null;
+	splitIconId: string;
+	showSwapAction: boolean;
+	swapIconId: "arrow-up-down" | "arrow-left-right";
+	swapTitle: string;
+	canSwitchSinglePaneMode: boolean;
 }
 
 export type FileMenuOpenAction<TLeaf extends object> =
@@ -170,9 +182,10 @@ export class WorkspaceSession<TLeaf extends object> {
 	private pendingSourceMarkdown = new Map<string, string>();
 	private pendingMindMapTimers = new Map<string, SessionTimerHandle>();
 
-	// Split View locate-sync state (echo suppression & deduplication)
+	// Split View locate-sync state (echo suppression, deduplication & cached line index)
 	private suppressedSourceLocateLine = new Map<string, number>();
 	private lastSyncedLocatePath = new Map<string, string>();
+	private lineIndexCache = new MarkdownLineIndexCache();
 
 	constructor(
 		adapter: WorkspaceSessionAdapter<TLeaf>,
@@ -512,6 +525,29 @@ export class WorkspaceSession<TLeaf extends object> {
 		return { isActive: false, layout: null, counterpartLeaf: null };
 	}
 
+	/**
+	 * Projects canonical Split View UI action state (icons, swap orientation/title,
+	 * and single-pane mode-switch lock) so all toolbar, header, and menu adapters
+	 * render from one source of truth.
+	 */
+	public getSplitActionDescriptor(leaf: TLeaf): SplitActionDescriptor {
+		const state = this.getSplitState(leaf);
+		const isTopBottom = state.isActive && state.layout === "top-bottom";
+		return {
+			isActive: state.isActive,
+			layout: state.layout,
+			splitIconId: isTopBottom
+				? SPLIT_TOP_BOTTOM_ICON_ID
+				: SPLIT_LEFT_RIGHT_ICON_ID,
+			showSwapAction: state.isActive,
+			swapIconId: isTopBottom ? "arrow-up-down" : "arrow-left-right",
+			swapTitle: isTopBottom
+				? "调换上下位置（脑图 ↔ 源码）"
+				: "调换左右位置（脑图 ↔ 源码）",
+			canSwitchSinglePaneMode: !state.isActive,
+		};
+	}
+
 	public async openOrSwitchSplit(
 		originLeaf: TLeaf,
 		targetLayout: SplitLayout
@@ -790,7 +826,12 @@ export class WorkspaceSession<TLeaf extends object> {
 			this.lastKnownMarkdown.get(filePath);
 		if (markdown === null || markdown === undefined) return;
 
-		const line = findMarkdownLineForNodePath(markdown, pathKey, topic);
+		const line = this.lineIndexCache.findLineForNodePath(
+			filePath,
+			markdown,
+			pathKey,
+			topic
+		);
 		if (line === null) return;
 
 		this.suppressedSourceLocateLine.set(filePath, line);
@@ -822,7 +863,11 @@ export class WorkspaceSession<TLeaf extends object> {
 			this.suppressedSourceLocateLine.delete(filePath);
 		}
 
-		const pathKey = findNodePathForMarkdownLine(markdown, cursorLine);
+		const pathKey = this.lineIndexCache.findNodePathForLine(
+			filePath,
+			markdown,
+			cursorLine
+		);
 		if (!pathKey) return;
 
 		if (
@@ -882,6 +927,7 @@ export class WorkspaceSession<TLeaf extends object> {
 		this.applyingToSource.clear();
 		this.suppressedSourceLocateLine.clear();
 		this.lastSyncedLocatePath.clear();
+		this.lineIndexCache.clear();
 		this.splitSessions.clear();
 		this.lastActiveLeaf = null;
 	}

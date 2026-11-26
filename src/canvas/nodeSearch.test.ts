@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { NodeObj } from "mind-elixir";
-import {
-	extractSearchableNodeText,
-	findMatchingNodes,
-	stepSearchMatchIndex,
-} from "./nodeSearch";
+import { findMatchingNodes, stepSearchMatchIndex } from "./nodeSearch";
 
 const SAMPLE_TREE: NodeObj = {
 	id: "root",
@@ -38,15 +34,6 @@ const SAMPLE_TREE: NodeObj = {
 };
 
 describe("nodeSearch", () => {
-	it("strips inline markdown formatting so mixed-style words remain searchable", () => {
-		expect(extractSearchableNodeText("**dfadsf***asdf*")).toBe("dfadsfasdf");
-		expect(extractSearchableNodeText("[[目标笔记|知识库]]")).toBe(
-			"知识库 目标笔记"
-		);
-		expect(extractSearchableNodeText("![[shot.png|200]]")).toBe("shot.png");
-		expect(extractSearchableNodeText("==高亮== `code`")).toBe("高亮 code");
-	});
-
 	it("finds matches case-insensitively across formatted text, wikilinks, images, and collapsed branches", () => {
 		expect(findMatchingNodes(SAMPLE_TREE, "")).toEqual([]);
 		expect(findMatchingNodes(SAMPLE_TREE, "   ")).toEqual([]);

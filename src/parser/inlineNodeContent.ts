@@ -93,8 +93,11 @@ function appendTextNode(nodes: InlineEditNode[], text: string): void {
 }
 
 /**
- * Parses inline Obsidian Markdown (inline code, images, wikilinks, external links,
- * tags, bold, italic, strikethrough, highlight) into a lossless WYSIWYG inline AST.
+ * Single canonical parser for inline Obsidian Markdown inside a Node
+ * (inline code, images, wikilinks, external links, tags, bold, italic,
+ * strikethrough, highlight). All canvas HTML rendering, Node Inline Editor
+ * AST manipulation, search text extraction, and display titles derive from
+ * this AST so inline grammar never drifts across modules.
  */
 export function parseNodeTopicToRichNodes(rawTopic: string): InlineEditNode[] {
 	return parseRichRange(rawTopic, new Set());
@@ -362,6 +365,167 @@ function findClosingSingleAsterisk(input: string, fromIndex: number): number {
 		}
 	}
 	return -1;
+}
+
+function escapeHtml(text: string): string {
+	return text
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;");
+}
+
+function parseObsidianImageSize(size?: string): string {
+	if (!size) return "";
+	const trimmed = size.trim();
+	const whMatch = trimmed.match(/^(\d+)x(\d+)$/i);
+	if (whMatch) {
+		return ` style="width:${whMatch[1]}px;height:${whMatch[2]}px"`;
+	}
+	const wMatch = trimmed.match(/^(\d+)$/);
+	if (wMatch) {
+		return ` style="width:${wMatch[1]}px;height:auto"`;
+	}
+	return "";
+}
+
+function renderInlineNodesToHtml(
+	nodes: readonly InlineEditNode[],
+	resolveVaultImage?: (target: string) => string | null
+): string {
+	let html = "";
+	for (const node of nodes) {
+		switch (node.kind) {
+			case "text":
+				html += escapeHtml(node.text).replace(/\r?\n/g, "<br>");
+				break;
+			case "mark": {
+				const inner = renderInlineNodesToHtml(node.children, resolveVaultImage);
+				if (node.mark === "bold") {
+					html += `<strong>${inner}</strong>`;
+				} else if (node.mark === "italic") {
+					html += `<em>${inner}</em>`;
+				} else if (node.mark === "strikethrough") {
+					html += `<del>${inner}</del>`;
+				} else if (node.mark === "highlight") {
+					html += `<mark class="mm-highlight">${inner}</mark>`;
+				} else {
+					html += `<code class="mm-inline-code">${inner}</code>`;
+				}
+				break;
+			}
+			case "wikilink":
+				html += `<a class="internal-link mm-wikilink" data-href="${escapeHtml(node.target)}" href="${escapeHtml(node.target)}">${escapeHtml(node.label)}</a>`;
+				break;
+			case "extlink":
+				html += `<a class="external-link mm-extlink" href="${escapeHtml(node.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(node.label)}</a>`;
+				break;
+			case "tag":
+				html += `<span class="mm-tag">#${escapeHtml(node.tag)}</span>`;
+				break;
+			case "image":
+				if (node.imageKind === "obsidian") {
+					const resolved = resolveVaultImage
+						? resolveVaultImage(node.target)
+						: null;
+					if (!resolved) {
+						html += `<span class="mm-broken-img" title="${escapeHtml(node.target)}">🖼️ ${escapeHtml(node.target)}</span>`;
+					} else {
+						const sizeStyle = parseObsidianImageSize(node.size);
+						html += `<img class="mm-node-img" src="${escapeHtml(resolved)}" alt="${escapeHtml(node.target)}"${sizeStyle} draggable="false" />`;
+					}
+				} else {
+					const resolved =
+						(isSafeExternalUrl(node.target) ? node.target : null) ||
+						(resolveVaultImage ? resolveVaultImage(node.target) : null);
+					if (!resolved) {
+						html += `<span class="mm-broken-img">🖼️ ${escapeHtml(node.alt || node.target)}</span>`;
+					} else {
+						html += `<img class="mm-node-img" src="${escapeHtml(resolved)}" alt="${escapeHtml(node.alt ?? "")}" draggable="false" />`;
+					}
+				}
+				break;
+		}
+	}
+	return html;
+}
+
+/**
+ * Renders inline Obsidian Markdown (wikilinks, embedded images, external links,
+ * bold/italic/code/strikethrough/highlight/tags) to safe HTML from the canonical AST.
+ */
+export function renderNodeMarkdown(
+	raw: string,
+	resolveVaultImage?: (target: string) => string | null
+): string {
+	return renderInlineNodesToHtml(
+		parseNodeTopicToRichNodes(raw),
+		resolveVaultImage
+	);
+}
+
+function projectNodesToPlainText(
+	nodes: readonly InlineEditNode[],
+	includeLinkTargets: boolean
+): string {
+	let out = "";
+	for (const node of nodes) {
+		switch (node.kind) {
+			case "text":
+				out += node.text;
+				break;
+			case "mark":
+				out += projectNodesToPlainText(node.children, includeLinkTargets);
+				break;
+			case "wikilink":
+				out +=
+					includeLinkTargets && node.label !== node.target
+						? `${node.label} ${node.target}`
+						: node.label;
+				break;
+			case "extlink":
+				out += includeLinkTargets ? `${node.label} ${node.url}` : node.label;
+				break;
+			case "tag":
+				out += `#${node.tag}`;
+				break;
+			case "image":
+				if (node.imageKind === "obsidian") {
+					out += node.target;
+				} else {
+					out += includeLinkTargets
+						? `${node.alt ?? ""} ${node.target}`.trim()
+						: node.alt || node.target;
+				}
+				break;
+		}
+	}
+	return out;
+}
+
+/**
+ * Projects a Node's inline Markdown into human-readable searchable plain text
+ * (including both wikilink alias and target) via the canonical inline AST.
+ */
+export function extractSearchableNodeText(rawTopic: string): string {
+	return projectNodesToPlainText(parseNodeTopicToRichNodes(rawTopic), true);
+}
+
+/**
+ * Projects a Node's inline Markdown into a concise single-line display title
+ * (e.g. for Note headers and hover previews) via the canonical inline AST.
+ */
+export function extractNodeDisplayTitle(
+	rawTopic: string,
+	fallback = "未命名节点"
+): string {
+	const plain = projectNodesToPlainText(
+		parseNodeTopicToRichNodes(rawTopic || ""),
+		false
+	)
+		.replace(/\s+/g, " ")
+		.trim();
+	return plain || fallback;
 }
 
 export function serializeImageAttachment(image: NodeImageAttachment): string {

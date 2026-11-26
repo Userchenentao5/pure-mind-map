@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { MindElixirData } from "mind-elixir";
-import { MindMapDocument } from "./MindMapDocument";
+import {
+	MarkdownLineIndexCache,
+	MindMapDocument,
+	findNodePathKeyById,
+	resolveNodeByPathKey,
+} from "./MindMapDocument";
 
 describe("MindMapDocument", () => {
 	it("reconciles mount, refresh, and echo-skipping noop transitions with direction precedence", () => {
@@ -213,5 +218,73 @@ describe("MindMapDocument", () => {
 		if (reloaded.action === "noop") throw new Error("Expected mount");
 		expect(reloaded.stylePreset).toBe("bordered");
 		expect(doc.hasExplicitStyleInNote()).toBe(true);
+	});
+
+	it("indexes Node lines across frontmatter, comments, notes, and code blocks, and caches Split View lookups", () => {
+		const sampleMd = [
+			"---", // 0
+			"mindmap-plugin: basic", // 1
+			"mindmap-direction: side", // 2
+			"---", // 3
+			"", // 4
+			"# Project", // 5
+			"", // 6
+			"<!-- note comment -->", // 7
+			"", // 8
+			"## Branch A", // 9
+			"- Item A1", // 10
+			"  > Note line under A1", // 11
+			"  - Leaf A1-1", // 12
+			"", // 13
+			"```sh", // 14
+			"# inside code", // 15
+			"echo hi", // 16
+			"```", // 17
+			"", // 18
+			"## Branch B", // 19
+			"- Item B1", // 20
+		].join("\n");
+
+		const doc = new MindMapDocument("side");
+		const mounted = doc.reconcileExternalMarkdown(sampleMd, {
+			fallbackTitle: "Project",
+			defaultDirection: "side",
+			clear: true,
+			hasCanvas: false,
+		});
+		if (mounted.action === "noop") throw new Error("Expected mount");
+
+		// Direct cached lookup on MindMapDocument
+		expect(doc.findLineForNodePath("0")).toBe(5);
+		expect(doc.findLineForNodePath("0.0")).toBe(9);
+		expect(doc.findLineForNodePath("0.0.0")).toBe(10);
+		expect(doc.findLineForNodePath("0.0.0.0")).toBe(12);
+		expect(doc.findLineForNodePath("0.1")).toBe(19);
+		expect(doc.findLineForNodePath("0.1.0")).toBe(20);
+
+		expect(doc.findNodePathForLine(1)).toBeNull();
+		expect(doc.findNodePathForLine(7)).toBe("0");
+		expect(doc.findNodePathForLine(11)).toBe("0.0.0");
+		expect(doc.findNodePathForLine(15)).toBe("0.0.0.0");
+
+		// Live tree pathKey & ancestor resolution
+		const root = mounted.data.nodeData;
+		const leaf = root.children![0].children![0].children![0];
+		expect(findNodePathKeyById(root, leaf.id)).toBe("0.0.0.0");
+		const resolved = resolveNodeByPathKey(root, "0.0.0.0");
+		expect(resolved?.node.id).toBe(leaf.id);
+		expect(resolved?.ancestorIds).toEqual([
+			root.id,
+			root.children![0].id,
+			root.children![0].children![0].id,
+		]);
+
+		// MarkdownLineIndexCache returns the same index reference on unchanged Markdown
+		const cache = new MarkdownLineIndexCache();
+		const firstIdx = cache.getLineIndex("maps/a.md", sampleMd);
+		const secondIdx = cache.getLineIndex("maps/a.md", sampleMd);
+		expect(secondIdx).toBe(firstIdx);
+		expect(cache.findLineForNodePath("maps/a.md", sampleMd, "0.1.0")).toBe(20);
+		expect(cache.findNodePathForLine("maps/a.md", sampleMd, 11)).toBe("0.0.0");
 	});
 });

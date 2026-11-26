@@ -1,16 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
 	applyImageSizePreset,
+	extractNodeDisplayTitle,
+	extractSearchableNodeText,
 	getImageSizePreset,
 	normalizeCommittedTopic,
 	normalizeExternalUrlInput,
 	parseNodeTopicToRichNodes,
+	renderNodeMarkdown,
 	serializeImageAttachment,
 	serializeRichNodesToMarkdown,
 	wrapMarkMarkdown,
-} from "./nodeRichContent";
+} from "./inlineNodeContent";
 
-describe("nodeRichContent", () => {
+describe("inlineNodeContent", () => {
 	it("preserves exact document order across text, inline images, and wikilink chips", () => {
 		const raw =
 			"asdasdfsad![[企业微信截图_20261019133423.png]]\n[[LLM基础]]";
@@ -91,35 +94,49 @@ describe("nodeRichContent", () => {
 		expect(normalizeCommittedTopic(serializeRichNodesToMarkdown(nodes))).toBe(
 			raw
 		);
+		// Inline code contents stay literal across AST, HTML, and searchable plain text
+		expect(extractSearchableNodeText("`**literal**`")).toBe("**literal**");
+		expect(renderNodeMarkdown("`**literal**`")).toBe(
+			'<code class="mm-inline-code">**literal**</code>'
+		);
 	});
 
-	it("parses aliased wikilinks, external links, tags, and normalizes external URLs", () => {
+	it("renders wikilinks, images, inline styles, and escapes raw HTML safely from the same AST", () => {
 		const raw =
-			"参考 [[目标笔记|别名]] 与 [文档](https://example.com) #核心";
-		const nodes = parseNodeTopicToRichNodes(raw);
-
-		expect(nodes).toEqual([
-			{ kind: "text", text: "参考 " },
-			{
-				kind: "wikilink",
-				target: "目标笔记",
-				label: "别名",
-				raw: "[[目标笔记|别名]]",
-			},
-			{ kind: "text", text: " 与 " },
-			{
-				kind: "extlink",
-				label: "文档",
-				url: "https://example.com",
-				raw: "[文档](https://example.com)",
-			},
-			{ kind: "text", text: " " },
-			{ kind: "tag", tag: "核心", raw: "#核心" },
-		]);
-
-		expect(normalizeCommittedTopic(serializeRichNodesToMarkdown(nodes))).toBe(
-			raw
+			"**重点** `[[raw]]` [[目标笔记|别名]] ![[demo.png|200]] <script>alert(1)</script> #测试";
+		const html = renderNodeMarkdown(raw, (target) =>
+			target === "demo.png" ? "app://local/demo.png" : null
 		);
+
+		expect(html).toContain("<strong>重点</strong>");
+		expect(html).toContain('<code class="mm-inline-code">[[raw]]</code>');
+		expect(html).toContain('class="internal-link mm-wikilink"');
+		expect(html).toContain('data-href="目标笔记"');
+		expect(html).toContain(">别名</a>");
+		expect(html).toContain('src="app://local/demo.png"');
+		expect(html).toContain('style="width:200px;height:auto"');
+		expect(html).not.toContain("<script>");
+		expect(html).toContain("&lt;script&gt;");
+		expect(html).toContain('<span class="mm-tag">#测试</span>');
+
+		expect(extractSearchableNodeText("[[目标笔记|别名]] ![[demo.png|200]]")).toBe(
+			"别名 目标笔记 demo.png"
+		);
+		expect(extractNodeDisplayTitle("参考 [[目标笔记|别名]]")).toBe("参考 别名");
+		expect(extractNodeDisplayTitle("   ", "备注")).toBe("备注");
+	});
+
+	it("keeps URL validation consistent across AST, HTML rendering, and normalization", () => {
+		expect(parseNodeTopicToRichNodes("See [链接](https://)")).toEqual([
+			{ kind: "text", text: "See [链接](https://)" },
+		]);
+		expect(renderNodeMarkdown("See [链接](https://)")).toBe(
+			"See [链接](https://)"
+		);
+		expect(renderNodeMarkdown("[bad](javascript:alert(1))")).not.toContain(
+			"<a "
+		);
+
 		expect(normalizeExternalUrlInput("example.com/docs")).toBe(
 			"https://example.com/docs"
 		);
@@ -127,11 +144,6 @@ describe("nodeRichContent", () => {
 			"https://obsidian.md"
 		);
 		expect(normalizeExternalUrlInput("javascript:alert(1)")).toBeNull();
-	});
-
-	it("keeps incomplete external link placeholders editable and wraps multi-line marks per line", () => {
-		const nodes = parseNodeTopicToRichNodes("See [链接](https://)");
-		expect(nodes).toEqual([{ kind: "text", text: "See [链接](https://)" }]);
 
 		expect(wrapMarkMarkdown("bold", "line1\nline2")).toBe(
 			"**line1**\n**line2**"
@@ -140,49 +152,34 @@ describe("nodeRichContent", () => {
 		expect(wrapMarkMarkdown("highlight", "")).toBe("");
 	});
 
-	it("parses adjacent mixed styles on the same line without leaking asterisks or delimiters", () => {
-		// **dfadsf***asdf* (bold immediately followed by italic)
+	it("keeps adjacent mixed styles identical across AST, HTML, and plain-text projections", () => {
 		const boldThenItalic = parseNodeTopicToRichNodes("**dfadsf***asdf*");
 		expect(boldThenItalic).toEqual([
 			{ kind: "mark", mark: "bold", children: [{ kind: "text", text: "dfadsf" }] },
 			{ kind: "mark", mark: "italic", children: [{ kind: "text", text: "asdf" }] },
 		]);
 		expect(serializeRichNodesToMarkdown(boldThenItalic)).toBe("**dfadsf***asdf*");
+		expect(renderNodeMarkdown("**dfadsf***asdf*")).toBe(
+			"<strong>dfadsf</strong><em>asdf</em>"
+		);
+		expect(extractSearchableNodeText("**dfadsf***asdf*")).toBe("dfadsfasdf");
 
-		// *asdf***dfadsf** (italic immediately followed by bold)
 		const italicThenBold = parseNodeTopicToRichNodes("*asdf***dfadsf**");
 		expect(italicThenBold).toEqual([
 			{ kind: "mark", mark: "italic", children: [{ kind: "text", text: "asdf" }] },
 			{ kind: "mark", mark: "bold", children: [{ kind: "text", text: "dfadsf" }] },
 		]);
 		expect(serializeRichNodesToMarkdown(italicThenBold)).toBe("*asdf***dfadsf**");
-
-		// ***both*** (bold + italic on same span) and chained adjacent marks
-		const tripleAndAdjacent = parseNodeTopicToRichNodes(
-			"***both***==hi==~~del~~`code`"
+		expect(renderNodeMarkdown("*asdf***dfadsf**")).toBe(
+			"<em>asdf</em><strong>dfadsf</strong>"
 		);
-		expect(tripleAndAdjacent).toEqual([
-			{
-				kind: "mark",
-				mark: "bold",
-				children: [
-					{
-						kind: "mark",
-						mark: "italic",
-						children: [{ kind: "text", text: "both" }],
-					},
-				],
-			},
-			{ kind: "mark", mark: "highlight", children: [{ kind: "text", text: "hi" }] },
-			{
-				kind: "mark",
-				mark: "strikethrough",
-				children: [{ kind: "text", text: "del" }],
-			},
-			{ kind: "mark", mark: "code", children: [{ kind: "text", text: "code" }] },
-		]);
-		expect(serializeRichNodesToMarkdown(tripleAndAdjacent)).toBe(
-			"***both***==hi==~~del~~`code`"
+		expect(extractSearchableNodeText("*asdf***dfadsf**")).toBe("asdfdfadsf");
+
+		expect(renderNodeMarkdown("***both***")).toBe(
+			"<strong><em>both</em></strong>"
+		);
+		expect(extractSearchableNodeText("***both***==hi==~~del~~`code`")).toBe(
+			"bothhidelcode"
 		);
 	});
 

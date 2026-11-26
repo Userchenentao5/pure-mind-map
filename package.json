@@ -1,6 +1,6 @@
 {
   "name": "pure-mind-map",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Create and edit interactive mind maps backed by standard Markdown files, with one-click switching between mind map view and source mode.",
   "main": "main.js",
   "scripts": {

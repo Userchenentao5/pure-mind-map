@@ -7,10 +7,110 @@ import {
 	type MindMapStylePreset,
 } from "../settings/types";
 import {
+	findNodePathKeyById,
 	markdownToMindMap,
 	mindMapToMarkdown,
+	resolveNodeByPathKey,
+	type NodeLineEntry,
 	type PreservedMarkdownBlock,
 } from "./markdownParser";
+
+export { findNodePathKeyById, resolveNodeByPathKey };
+
+/**
+ * Pure lookup of a 0-based Markdown line number from a precomputed NodeLineEntry index.
+ */
+export function findLineInNodeIndex(
+	nodeLines: readonly NodeLineEntry[],
+	pathKey: string,
+	topicFallback?: string
+): number | null {
+	const exact = nodeLines.find((entry) => entry.pathKey === pathKey);
+	if (exact) return exact.line;
+
+	if (topicFallback) {
+		const byTopic = nodeLines.find((entry) => entry.topic === topicFallback);
+		if (byTopic) return byTopic.line;
+	}
+	return null;
+}
+
+/**
+ * Pure lookup of the owning Node pathKey for a 0-based Markdown cursor line
+ * (exact match, or nearest preceding Node line for comments/notes/code blocks).
+ */
+export function findNodePathInLineIndex(
+	nodeLines: readonly NodeLineEntry[],
+	cursorLine: number
+): string | null {
+	if (cursorLine < 0 || nodeLines.length === 0) return null;
+
+	let best: { pathKey: string; line: number } | null = null;
+	for (const entry of nodeLines) {
+		if (entry.line === cursorLine) {
+			return entry.pathKey;
+		}
+		if (entry.line < cursorLine) {
+			if (!best || entry.line >= best.line) {
+				best = { pathKey: entry.pathKey, line: entry.line };
+			}
+		}
+	}
+
+	return best ? best.pathKey : null;
+}
+
+/**
+ * Lightweight per-file cache of parsed NodeLineEntry snapshots so Split View
+ * cursor navigation and Node clicks avoid re-parsing unchanged Markdown.
+ */
+export class MarkdownLineIndexCache {
+	private entries = new Map<
+		string,
+		{ markdown: string; nodeLines: readonly NodeLineEntry[] }
+	>();
+
+	public getLineIndex(
+		filePath: string,
+		markdown: string
+	): readonly NodeLineEntry[] {
+		const cached = this.entries.get(filePath);
+		if (cached && cached.markdown === markdown) {
+			return cached.nodeLines;
+		}
+		const nodeLines = markdownToMindMap(markdown).nodeLines;
+		this.entries.set(filePath, { markdown, nodeLines });
+		return nodeLines;
+	}
+
+	public findLineForNodePath(
+		filePath: string,
+		markdown: string,
+		pathKey: string,
+		topicFallback?: string
+	): number | null {
+		return findLineInNodeIndex(
+			this.getLineIndex(filePath, markdown),
+			pathKey,
+			topicFallback
+		);
+	}
+
+	public findNodePathForLine(
+		filePath: string,
+		markdown: string,
+		cursorLine: number
+	): string | null {
+		return findNodePathInLineIndex(
+			this.getLineIndex(filePath, markdown),
+			cursorLine
+		);
+	}
+
+	public clear(): void {
+		this.entries.clear();
+	}
+}
 
 export interface ReconcileOptions {
 	fallbackTitle: string;
@@ -38,6 +138,7 @@ export type ReconcileDecision =
 export class MindMapDocument {
 	private existingFrontmatterRaw: string | null = null;
 	private preservedBlocks: PreservedMarkdownBlock[] = [];
+	private nodeLines: readonly NodeLineEntry[] = [];
 	private currentDirection: MindMapDirection;
 	private currentStylePreset: MindMapStylePreset;
 	private hasExplicitStylePreset = false;
@@ -106,11 +207,23 @@ export class MindMapDocument {
 	): void {
 		this.existingFrontmatterRaw = null;
 		this.preservedBlocks = [];
+		this.nodeLines = [];
 		this.currentDirection = defaultDirection;
 		this.currentStylePreset = defaultStylePreset;
 		this.hasExplicitStylePreset = false;
 		this.lastSavedMarkdown = "";
 		this.hasLocalEdits = false;
+	}
+
+	public findLineForNodePath(
+		pathKey: string,
+		topicFallback?: string
+	): number | null {
+		return findLineInNodeIndex(this.nodeLines, pathKey, topicFallback);
+	}
+
+	public findNodePathForLine(cursorLine: number): string | null {
+		return findNodePathInLineIndex(this.nodeLines, cursorLine);
 	}
 
 	/**
@@ -152,6 +265,7 @@ export class MindMapDocument {
 		const parsed = markdownToMindMap(markdown, options.fallbackTitle);
 		this.existingFrontmatterRaw = parsed.frontmatter.raw;
 		this.preservedBlocks = parsed.preservedBlocks;
+		this.nodeLines = parsed.nodeLines;
 		this.currentDirection = parsed.frontmatter.properties[MINDMAP_DIRECTION_KEY]
 			? parsed.direction
 			: options.defaultDirection;
