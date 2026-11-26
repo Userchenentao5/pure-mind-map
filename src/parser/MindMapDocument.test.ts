@@ -119,4 +119,63 @@ describe("MindMapDocument", () => {
 		expect(doc.lastSyncedMarkdown).toBe("");
 		expect(doc.serialize(null, "heading-list", "fallback")).toBe("fallback");
 	});
+
+	it("preserves standalone HTML comments and fenced code blocks verbatim after editing root title", () => {
+		const doc = new MindMapDocument("side");
+		const original = [
+			"---",
+			"mindmap-plugin: basic",
+			"mindmap-direction: side",
+			"---",
+			"",
+			"# Project",
+			"",
+			"<!-- sample note comment -->",
+			"",
+			"```sh",
+			"# explain the next line",
+			"printf 'hello'",
+			"```",
+			"",
+		].join("\n");
+
+		const mounted = doc.reconcileExternalMarkdown(original, {
+			fallbackTitle: "Project",
+			defaultDirection: "side",
+			clear: true,
+			hasCanvas: false,
+		});
+		expect(mounted.action).toBe("mount");
+		if (mounted.action === "noop") {
+			throw new Error("Expected mount decision");
+		}
+
+		expect(mounted.data.nodeData.topic).toBe("Project");
+		expect(mounted.data.nodeData.children).toEqual([]);
+		expect(doc.serialize(mounted.data, "heading-list")).toBe(original);
+
+		mounted.data.nodeData.topic = "Project updated";
+		doc.markLocalEdit();
+
+		const expected = original.replace("# Project", "# Project updated");
+		const firstSaved = doc.serialize(mounted.data, "heading-list");
+		expect(firstSaved).toBe(expected);
+
+		// Confirm save + echo reconcile + subsequent edit keeps preserving comment and code block
+		doc.markSaved(firstSaved);
+		expect(
+			doc.reconcileExternalMarkdown(firstSaved, {
+				fallbackTitle: "Project",
+				defaultDirection: "side",
+				clear: false,
+				hasCanvas: true,
+			}).action
+		).toBe("noop");
+
+		mounted.data.nodeData.topic = "Project v2";
+		doc.markLocalEdit();
+		expect(doc.serialize(mounted.data, "heading-list")).toBe(
+			original.replace("# Project", "# Project v2")
+		);
+	});
 });
