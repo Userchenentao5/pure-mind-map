@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
 	NodeInlineEditorSession,
+	decideTextBlurAction,
+	decideUrlBarBlurAction,
+	insertImageEmbedIntoText,
 	isImageExtension,
+	resolveRichShortcutMark,
 	type LinkCandidate,
 	type LinkPopupViewModel,
 	type NodeInlineEditorAdapter,
@@ -317,5 +321,114 @@ describe("NodeInlineEditorSession", () => {
 		expect(
 			await harness.session.appendFileToSelectedNode(SAMPLE_FILES[0], false)
 		).toBe(false);
+	});
+
+	it("arbitrates floating toolbar visibility, inline external-link flow, shortcuts, and blur transitions", () => {
+		const h = createEditorHarness({
+			initialText: "Visit docs now",
+			initialSelection: { start: 6, end: 10 },
+		});
+
+		expect(
+			h.session.resolveFormatToolbarVisibility({
+				isRichEditing: true,
+				isPointerSelecting: true,
+				hasNonEmptySelection: true,
+			})
+		).toBe("hidden");
+		expect(
+			h.session.resolveFormatToolbarVisibility({
+				isRichEditing: true,
+				isPointerSelecting: false,
+				hasNonEmptySelection: true,
+			})
+		).toBe("format-bar");
+
+		const pending = h.session.beginExternalLink("Visit docs now", {
+			start: 6,
+			end: 10,
+		});
+		expect(pending.label).toBe("docs");
+		expect(
+			h.session.resolveFormatToolbarVisibility({
+				isRichEditing: true,
+				isPointerSelecting: false,
+				hasNonEmptySelection: false,
+			})
+		).toBe("url-bar");
+
+		expect(h.session.confirmExternalLink("javascript:alert(1)")).toEqual({
+			ok: false,
+		});
+		expect(h.session.hasPendingExternalLink()).toBe(true);
+
+		expect(h.session.confirmExternalLink("obsidian.md")).toEqual({
+			ok: true,
+			text: "Visit [docs](https://obsidian.md) now",
+			selection: { start: 33, end: 33 },
+		});
+		expect(h.session.hasPendingExternalLink()).toBe(false);
+
+		expect(
+			decideTextBlurAction({
+				relatedInsideCard: false,
+				relatedInsidePopup: false,
+				relatedInsideToolbar: true,
+				hasPendingExternalLink: false,
+			})
+		).toBe("keep-editing");
+		expect(
+			decideTextBlurAction({
+				relatedInsideCard: false,
+				relatedInsidePopup: false,
+				relatedInsideToolbar: false,
+				hasPendingExternalLink: false,
+			})
+		).toBe("commit");
+
+		expect(
+			decideUrlBarBlurAction({
+				relatedInsideToolbar: true,
+				relatedInsideCard: false,
+			})
+		).toBe("keep-url-bar");
+		expect(
+			decideUrlBarBlurAction({
+				relatedInsideToolbar: false,
+				relatedInsideCard: true,
+			})
+		).toBe("cancel-to-editor");
+		expect(
+			decideUrlBarBlurAction({
+				relatedInsideToolbar: false,
+				relatedInsideCard: false,
+			})
+		).toBe("cancel-and-commit");
+
+		expect(
+			insertImageEmbedIntoText("Hello", { start: 5, end: 5 }, "shot.png")
+		).toEqual({
+			text: "Hello\n![[shot.png]]",
+			caretStart: 19,
+			caretEnd: 19,
+		});
+		expect(
+			resolveRichShortcutMark({
+				ctrlKey: true,
+				metaKey: false,
+				altKey: false,
+				shiftKey: false,
+				key: "b",
+			})
+		).toBe("bold");
+		expect(
+			resolveRichShortcutMark({
+				ctrlKey: true,
+				metaKey: false,
+				altKey: false,
+				shiftKey: true,
+				key: "H",
+			})
+		).toBe("highlight");
 	});
 });

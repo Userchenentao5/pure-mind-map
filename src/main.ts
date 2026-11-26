@@ -44,6 +44,7 @@ import {
 	type MindMapStylePreset,
 } from "./settings/types";
 import { MindMapView } from "./views/MindMapView";
+import { isEventInsideNodeNoteSurface } from "./canvas/NodeNoteController";
 
 export default class SimpleMindMapPlugin extends Plugin {
 	settings: MindMapSettings = DEFAULT_SETTINGS;
@@ -122,14 +123,14 @@ export default class SimpleMindMapPlugin extends Plugin {
 	}
 
 	public openSplitViewMenu(leaf: WorkspaceLeaf, evt: MouseEvent): void {
-		const state = this.session.getSplitState(leaf);
+		const action = this.session.getSplitActionDescriptor(leaf);
 		const menu = new Menu();
 
 		menu.addItem((item) => {
 			item
 				.setTitle("左右拆分视图（脑图 + 源码）")
 				.setIcon(SPLIT_LEFT_RIGHT_ICON_ID)
-				.setChecked(state.isActive && state.layout === "left-right")
+				.setChecked(action.isActive && action.layout === "left-right")
 				.onClick(() => {
 					void this.session.openOrSwitchSplit(leaf, "left-right");
 				});
@@ -139,24 +140,18 @@ export default class SimpleMindMapPlugin extends Plugin {
 			item
 				.setTitle("上下拆分视图（脑图 + 源码）")
 				.setIcon(SPLIT_TOP_BOTTOM_ICON_ID)
-				.setChecked(state.isActive && state.layout === "top-bottom")
+				.setChecked(action.isActive && action.layout === "top-bottom")
 				.onClick(() => {
 					void this.session.openOrSwitchSplit(leaf, "top-bottom");
 				});
 		});
 
-		if (state.isActive) {
+		if (action.showSwapAction) {
 			menu.addSeparator();
-			const swapIcon =
-				state.layout === "top-bottom" ? "arrow-up-down" : "arrow-left-right";
-			const swapTitle =
-				state.layout === "top-bottom"
-					? "调换上下位置（脑图 ↔ 源码）"
-					: "调换左右位置（脑图 ↔ 源码）";
 			menu.addItem((item) => {
 				item
-					.setTitle(swapTitle)
-					.setIcon(swapIcon)
+					.setTitle(action.swapTitle)
+					.setIcon(action.swapIconId)
 					.onClick(() => {
 						void this.session.swapSplitPositions(leaf);
 					});
@@ -401,14 +396,14 @@ export default class SimpleMindMapPlugin extends Plugin {
 		this.registerDomEvent(window, "mouseup", (evt: MouseEvent) => {
 			const target = evt.target as HTMLElement | null;
 			if (!target?.closest?.(".markdown-source-view")) return;
-			if (target.closest(".mm-note-panel")) return;
+			if (isEventInsideNodeNoteSurface(target)) return;
 			queueMicrotask(() => this.syncActiveSourceCursorToMindMap(true));
 		});
 
 		this.registerDomEvent(window, "keyup", (evt: KeyboardEvent) => {
 			const target = evt.target as HTMLElement | null;
 			if (!target?.closest?.(".markdown-source-view")) return;
-			if (target.closest(".mm-note-panel")) return;
+			if (isEventInsideNodeNoteSurface(target)) return;
 			queueMicrotask(() => this.syncActiveSourceCursorToMindMap(false));
 		});
 	}
@@ -841,16 +836,12 @@ export default class SimpleMindMapPlugin extends Plugin {
 			return;
 		}
 
-		const splitState = this.session.getSplitState(leaf);
-		const splitIcon =
-			splitState.isActive && splitState.layout === "top-bottom"
-				? SPLIT_TOP_BOTTOM_ICON_ID
-				: SPLIT_LEFT_RIGHT_ICON_ID;
+		const action = this.session.getSplitActionDescriptor(leaf);
 
 		let splitBtn = existingSplit;
 		if (!splitBtn) {
 			splitBtn = view.addAction(
-				splitIcon,
+				action.splitIconId,
 				"拆分视图（脑图 + 源码）",
 				(evt) => {
 					this.openSplitViewMenu(leaf, evt);
@@ -858,32 +849,24 @@ export default class SimpleMindMapPlugin extends Plugin {
 			);
 			splitBtn.addClass("mm-split-view-action");
 		} else {
-			setIcon(splitBtn, splitIcon);
+			setIcon(splitBtn, action.splitIconId);
 		}
-		splitBtn.toggleClass("is-active", splitState.isActive);
+		splitBtn.toggleClass("is-active", action.isActive);
 
-		if (splitState.isActive) {
+		if (action.showSwapAction) {
 			// Single-pane mode switching is disallowed while Split View is active; offer swap instead
 			existingToggle?.remove();
-			const swapIcon =
-				splitState.layout === "top-bottom"
-					? "arrow-up-down"
-					: "arrow-left-right";
-			const swapTitle =
-				splitState.layout === "top-bottom"
-					? "调换上下位置（脑图 ↔ 源码）"
-					: "调换左右位置（脑图 ↔ 源码）";
 
 			let swapBtn = existingSwap;
 			if (!swapBtn) {
-				swapBtn = view.addAction(swapIcon, swapTitle, () => {
+				swapBtn = view.addAction(action.swapIconId, action.swapTitle, () => {
 					void this.session.swapSplitPositions(leaf);
 				});
 				swapBtn.addClass("mm-swap-split-action");
 			} else {
-				setIcon(swapBtn, swapIcon);
-				swapBtn.setAttribute("aria-label", swapTitle);
-				swapBtn.setAttribute("title", swapTitle);
+				setIcon(swapBtn, action.swapIconId);
+				swapBtn.setAttribute("aria-label", action.swapTitle);
+				swapBtn.setAttribute("title", action.swapTitle);
 			}
 		} else {
 			existingSwap?.remove();

@@ -308,6 +308,52 @@ export function formatDescendantCountBadge(count: number): string {
 }
 
 /**
+ * Measures an element's offset coordinates and box dimensions relative to
+ * MindElixir's `.me-nodes` container. Replaces duplicated offsetParent walks
+ * across MindMapView overlays and NodeInlineEditor alignment.
+ */
+export function measureOffsetRelativeToNodes(
+	targetEl: HTMLElement,
+	nodesContainer: HTMLElement
+): { left: number; top: number; width: number; height: number } {
+	let left = 0;
+	let top = 0;
+	let cur: HTMLElement | null = targetEl;
+	while (cur && cur !== nodesContainer) {
+		left += cur.offsetLeft;
+		top += cur.offsetTop;
+		cur = cur.offsetParent as HTMLElement | null;
+	}
+	return {
+		left,
+		top,
+		width: targetEl.offsetWidth,
+		height: targetEl.offsetHeight,
+	};
+}
+
+/**
+ * Identifies transient interactive UI overlays injected inside MindElixir's
+ * `.me-nodes` tree that must be stripped when cloning the canvas for export.
+ */
+export function isTransientCanvasOverlayElement(el: HTMLElement): boolean {
+	return (
+		el.id === "input-box" ||
+		el.classList.contains("insert-preview") ||
+		el.classList.contains("mind-elixir-ghost") ||
+		el.classList.contains("mm-node-quick-add") ||
+		el.classList.contains("mm-root-collapse-btn")
+	);
+}
+
+/**
+ * Seam helper checking whether the root branch tree is collapsed on `.me-nodes`.
+ */
+export function isRootTopicCollapsed(nodesContainer: HTMLElement): boolean {
+	return nodesContainer.classList.contains("mm-root-collapsed");
+}
+
+/**
  * Computes clamped (left, top) coordinates for a context menu relative to its
  * host container so it flips upward/leftward near edges and never clips off-screen.
  */

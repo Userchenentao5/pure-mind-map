@@ -1,4 +1,5 @@
 import type { NodeObj } from "mind-elixir";
+import { extractSearchableNodeText } from "../parser/inlineNodeContent";
 
 export interface NodeSearchMatch {
 	nodeId: string;
@@ -7,36 +8,6 @@ export interface NodeSearchMatch {
 	ancestorIds: string[];
 	/** True when the search query matched inside the node's note rather than its topic */
 	matchedInNote?: boolean;
-}
-
-/**
- * Produces human-readable searchable text from a Node's raw Markdown topic so
- * searches match across inline formatting (`**dfadsf***asdf*` -> `dfadsfasdf`),
- * wikilinks (`[[Target|Alias]]` -> `Alias Target`), external links, and embeds.
- */
-export function extractSearchableNodeText(rawTopic: string): string {
-	let text = rawTopic;
-	// Obsidian embeds: ![[file.png|200]] -> file.png
-	text = text.replace(/!\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, "$1");
-	// Markdown images: ![alt](url) -> alt url
-	text = text.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, "$1 $2");
-	// Obsidian wikilinks: [[target|alias]] -> alias target
-	text = text.replace(
-		/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
-		(_m, target: string, alias?: string) => (alias ? `${alias} ${target}` : target)
-	);
-	// Markdown links: [label](url) -> label url
-	text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 $2");
-	// Strip inline Markdown style delimiters while keeping text intact
-	text = text
-		.replace(/\*\*\*(.+?)\*\*\*/g, "$1")
-		.replace(/\*\*(.+?)\*\*/g, "$1")
-		.replace(/__(.+?)__/g, "$1")
-		.replace(/~~(.+?)~~/g, "$1")
-		.replace(/==(.+?)==/g, "$1")
-		.replace(/(^|[^*])\*([^*]+?)\*(?!\*)/g, "$1$2")
-		.replace(/`([^`]+)`/g, "$1");
-	return text;
 }
 
 /**

@@ -9,6 +9,7 @@ import {
 	type MinimapNodeInput,
 	type RectLike,
 } from "./minimapGeometry";
+import { isRootTopicCollapsed } from "./canvasConfig";
 
 const MINIMAP_WIDTH = 188;
 const MINIMAP_HEIGHT = 120;
@@ -369,7 +370,7 @@ export class MindMapMinimap {
 		nodes: MinimapNodeInput[];
 		edges: MinimapEdgeInput[];
 	} {
-		const isRootCollapsed = mind.nodes.classList.contains("mm-root-collapsed");
+		const isRootCollapsed = isRootTopicCollapsed(mind.nodes);
 		const branchColors = new Map<string, string>();
 		const walkColors = (node: NodeObj, inheritedColor?: string) => {
 			const effective = node.branchColor || inheritedColor;

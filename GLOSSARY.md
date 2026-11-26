@@ -12,6 +12,10 @@ _Avoid_: Mind map file, diagram file, canvas note
 A single topic entry in the mind map tree, mapped to a Markdown heading or list item and rendered with inline Obsidian Markdown syntax.
 _Avoid_: Item, box, card, topic element
 
+**Node Note**:
+Long-form Markdown annotation attached to a Node, persisted as standard Markdown blockquotes (`>`) beneath the Node's heading or list item and edited in Obsidian Live Preview.
+_Avoid_: Comment, sticky popup, remark box
+
 **Node Inline Editor**:
 The active text-editing session on a Node, encompassing text formatting, clipboard editing, pill overlay alignment, explicit commit, and inline link/embed completion.
 _Avoid_: Input box, topic input, inline popup

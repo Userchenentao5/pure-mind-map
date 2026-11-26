@@ -824,4 +824,47 @@ describe("WorkspaceSession", () => {
 			events.filter((e) => e.startsWith("revealNode:")).length
 		).toBe(countAfterFirst + 1);
 	});
+
+	it("projects canonical Split View action descriptors for single-pane, left-right, and top-bottom layouts", async () => {
+		const mindLeaf: FakeLeaf = {
+			id: "L1",
+			kind: "mindmap",
+			filePath: "maps/a.md",
+			markdown: "# Root",
+			dirty: false,
+			rect: { left: 0, top: 0, width: 1000, height: 800 },
+		};
+		const { session } = createWorkspaceHarness({
+			initialLeaves: [mindLeaf],
+		});
+
+		expect(session.getSplitActionDescriptor(mindLeaf)).toMatchObject({
+			isActive: false,
+			layout: null,
+			showSwapAction: false,
+			swapIconId: "arrow-left-right",
+			canSwitchSinglePaneMode: true,
+		});
+
+		await session.openOrSwitchSplit(mindLeaf, "left-right");
+		expect(session.getSplitActionDescriptor(mindLeaf)).toMatchObject({
+			isActive: true,
+			layout: "left-right",
+			showSwapAction: true,
+			swapIconId: "arrow-left-right",
+			swapTitle: "调换左右位置（脑图 ↔ 源码）",
+			canSwitchSinglePaneMode: false,
+		});
+
+		mindLeaf.rect = { left: 0, top: 0, width: 1000, height: 400 };
+		await session.openOrSwitchSplit(mindLeaf, "top-bottom");
+		expect(session.getSplitActionDescriptor(mindLeaf)).toMatchObject({
+			isActive: true,
+			layout: "top-bottom",
+			showSwapAction: true,
+			swapIconId: "arrow-up-down",
+			swapTitle: "调换上下位置（脑图 ↔ 源码）",
+			canSwitchSinglePaneMode: false,
+		});
+	});
 });

@@ -2,9 +2,13 @@ import { App, Menu, Notice, TFile, prepareFuzzySearch, setIcon } from "obsidian"
 import type MindElixir from "mind-elixir";
 import type { Topic } from "mind-elixir";
 import { ImageSuggestModal, NoteLinkSuggestModal } from "../modals/VaultSuggestModals";
+import { measureOffsetRelativeToNodes } from "../canvas/canvasConfig";
 import {
 	NodeInlineEditorSession,
-	type InlineFormatKind,
+	decideTextBlurAction,
+	decideUrlBarBlurAction,
+	insertImageEmbedIntoText,
+	resolveRichShortcutMark,
 	type LinkCandidate,
 	type LinkPopupViewModel,
 	type SelectionRange,
@@ -15,15 +19,15 @@ import {
 	applyImageSizePreset,
 	formatImageSizeLabel,
 	getImageSizePreset,
+	isSafeExternalUrl,
 	normalizeCommittedTopic,
-	normalizeExternalUrlInput,
 	parseNodeTopicToRichNodes,
 	serializeImageAttachment,
 	wrapMarkMarkdown,
 	type InlineEditNode,
 	type NodeImageAttachment,
 	type RichMarkKind,
-} from "./nodeRichContent";
+} from "../parser/inlineNodeContent";
 
 export interface NodeInlineEditorHost {
 	getMind: () => MindElixir | null;
@@ -42,13 +46,6 @@ interface RichEditSession {
 	cardEl: HTMLElement;
 	textEl: HTMLElement;
 	finished: boolean;
-}
-
-interface PendingExternalLinkContext {
-	richSession: RichEditSession;
-	fullText: string;
-	selection: SelectionRange;
-	label: string;
 }
 
 const ZWSP = "\u200B";
@@ -360,7 +357,6 @@ export class NodeInlineEditor {
 	private formatBarRowEl: HTMLElement | null = null;
 	private urlBarRowEl: HTMLElement | null = null;
 	private urlInputEl: HTMLInputElement | null = null;
-	private pendingExternalLink: PendingExternalLinkContext | null = null;
 	private isPointerSelecting = false;
 
 	private readonly onContextMenuBound: (evt: MouseEvent) => void;
@@ -911,11 +907,8 @@ export class NodeInlineEditor {
 	}
 
 	private resolveAttachmentUrl(image: NodeImageAttachment): string | null {
-		if (image.kind === "markdown") {
-			const trimmed = image.target.trim();
-			if (/^(https?:\/\/|data:image\/|app:\/\/|capacitor:\/\/)/i.test(trimmed)) {
-				return trimmed;
-			}
+		if (image.kind === "markdown" && isSafeExternalUrl(image.target)) {
+			return image.target.trim();
 		}
 		return this.host.resolveVaultImage(image.target);
 	}
@@ -924,18 +917,16 @@ export class NodeInlineEditor {
 		richSession: RichEditSession,
 		fileName: string
 	): void {
-		const { textEl } = richSession;
-		const snap = this.readRichTextSnapshot(textEl);
-		const before = snap.text.slice(0, snap.selection.start);
-		const after = snap.text.slice(snap.selection.end);
-		const needsLeadingBreak = before.length > 0 && !before.endsWith("\n");
-		const insertion = `${needsLeadingBreak ? "\n" : ""}![[${fileName}]]`;
-		const nextText = `${before}${insertion}${after}`;
-		const nextCaret = before.length + insertion.length;
+		const snap = this.readRichTextSnapshot(richSession.textEl);
+		const edited = insertImageEmbedIntoText(
+			snap.text,
+			snap.selection,
+			fileName
+		);
 		this.writeRichTextSnapshot(
 			richSession,
-			nextText,
-			{ start: nextCaret, end: nextCaret },
+			edited.text,
+			{ start: edited.caretStart, end: edited.caretEnd },
 			true
 		);
 	}
@@ -1138,47 +1129,41 @@ export class NodeInlineEditor {
 		return active;
 	}
 
+	private getActiveRichSession(): RichEditSession | null {
+		return this.activeRichSession && !this.activeRichSession.finished
+			? this.activeRichSession
+			: null;
+	}
+
 	private updateFloatingFormatToolbar(): void {
-		const richSession = this.activeRichSession;
-		if (!richSession || richSession.finished) {
+		const richSession = this.getActiveRichSession();
+		if (!richSession) {
 			this.destroyFormatToolbarDom();
-			return;
-		}
-
-		// Keep toolbar hidden while actively dragging a text selection
-		if (this.isPointerSelecting) {
-			this.hideFormatToolbar();
-			return;
-		}
-
-		// Keep toolbar open while user is typing a URL in the inline external-link bar
-		if (this.pendingExternalLink) {
-			return;
-		}
-
-		if (this.session.isSuggesterOpen()) {
-			this.hideFormatToolbar();
 			return;
 		}
 
 		const { textEl } = richSession;
 		const sel = window.getSelection();
-		if (!sel || sel.rangeCount === 0 || sel.isCollapsed) {
-			this.hideFormatToolbar();
+		const range =
+			sel && sel.rangeCount > 0 && !sel.isCollapsed ? sel.getRangeAt(0) : null;
+		const rangeInEditor = Boolean(
+			range &&
+				textEl.contains(range.startContainer) &&
+				textEl.contains(range.endContainer)
+		);
+		const selectedText =
+			range && rangeInEditor ? range.toString().replace(/\u200B/g, "") : "";
+
+		const visibility = this.session.resolveFormatToolbarVisibility({
+			isRichEditing: true,
+			isPointerSelecting: this.isPointerSelecting,
+			hasNonEmptySelection: selectedText.trim().length > 0,
+		});
+
+		if (visibility === "url-bar") {
 			return;
 		}
-
-		const range = sel.getRangeAt(0);
-		if (
-			!textEl.contains(range.startContainer) ||
-			!textEl.contains(range.endContainer)
-		) {
-			this.hideFormatToolbar();
-			return;
-		}
-
-		const selectedText = range.toString().replace(/\u200B/g, "");
-		if (!selectedText.trim()) {
+		if (visibility === "hidden" || !range) {
 			this.hideFormatToolbar();
 			return;
 		}
@@ -1333,18 +1318,21 @@ export class NodeInlineEditor {
 			}
 		});
 		urlInput.addEventListener("blur", (evt) => {
+			if (!this.session.hasPendingExternalLink()) return;
+			const richSession = this.getActiveRichSession();
 			const related = evt.relatedTarget as Node | null;
-			if (related && this.formatToolbarEl?.contains(related)) {
-				return;
-			}
-			const pending = this.pendingExternalLink;
-			if (!pending) return;
+			const action = decideUrlBarBlurAction({
+				relatedInsideToolbar: Boolean(
+					related && this.formatToolbarEl?.contains(related)
+				),
+				relatedInsideCard: Boolean(
+					related && richSession?.cardEl.contains(related)
+				),
+			});
+			if (action === "keep-url-bar") return;
 			this.cancelInlineExternalLink(false);
-			if (
-				!related ||
-				!pending.richSession.cardEl.contains(related)
-			) {
-				this.commitRichSession(pending.richSession);
+			if (action === "cancel-and-commit" && richSession) {
+				this.commitRichSession(richSession);
 			}
 		});
 		confirmBtn.addEventListener("click", (evt) => {
@@ -1365,19 +1353,11 @@ export class NodeInlineEditor {
 	}
 
 	private openInlineExternalLinkBar(): void {
-		const richSession = this.activeRichSession;
-		if (!richSession || richSession.finished) return;
+		const richSession = this.getActiveRichSession();
+		if (!richSession) return;
 
 		const snap = this.readRichTextSnapshot(richSession.textEl);
-		const label =
-			snap.text.slice(snap.selection.start, snap.selection.end).trim() || "链接";
-
-		this.pendingExternalLink = {
-			richSession,
-			fullText: snap.text,
-			selection: snap.selection,
-			label,
-		};
+		this.session.beginExternalLink(snap.text, snap.selection);
 
 		this.ensureFormatToolbarDom();
 		this.formatToolbarEl?.removeClass("mm-is-hidden");
@@ -1391,46 +1371,34 @@ export class NodeInlineEditor {
 	}
 
 	private confirmInlineExternalLink(): void {
-		const pending = this.pendingExternalLink;
+		const richSession = this.getActiveRichSession();
 		const rawUrl = this.urlInputEl?.value ?? "";
-		if (!pending) return;
+		if (!richSession || !this.session.hasPendingExternalLink()) return;
 
-		const normalized = normalizeExternalUrlInput(rawUrl);
-		if (!normalized) {
+		const result = this.session.confirmExternalLink(rawUrl);
+		if (!result.ok) {
 			new Notice("请输入有效的链接地址（如 https://example.com）");
 			this.urlInputEl?.focus();
 			return;
 		}
 
-		this.pendingExternalLink = null;
 		this.hideFormatToolbar();
-
-		const { richSession, fullText, selection, label } = pending;
-		if (richSession.finished) return;
-
-		const mdLink = `[${label}](${normalized})`;
-		const nextText =
-			fullText.slice(0, selection.start) +
-			mdLink +
-			fullText.slice(selection.end);
-		const nextCaret = selection.start + mdLink.length;
-
 		this.writeRichTextSnapshot(
 			richSession,
-			nextText,
-			{ start: nextCaret, end: nextCaret },
+			result.text,
+			result.selection,
 			true
 		);
 	}
 
 	private cancelInlineExternalLink(restoreFocus: boolean): void {
-		const pending = this.pendingExternalLink;
-		this.pendingExternalLink = null;
+		const pending = this.session.cancelExternalLink();
 		this.hideFormatToolbar();
-		if (restoreFocus && pending && !pending.richSession.finished) {
-			pending.richSession.textEl.focus();
+		const richSession = this.getActiveRichSession();
+		if (restoreFocus && pending && richSession) {
+			richSession.textEl.focus();
 			this.setSelectionInRichText(
-				pending.richSession.textEl,
+				richSession.textEl,
 				pending.selection.start,
 				pending.selection.end
 			);
@@ -1467,7 +1435,7 @@ export class NodeInlineEditor {
 	}
 
 	private destroyFormatToolbarDom(): void {
-		this.pendingExternalLink = null;
+		this.session.cancelExternalLink();
 		if (this.formatToolbarEl) {
 			this.formatToolbarEl.remove();
 			this.formatToolbarEl = null;
@@ -1612,33 +1580,11 @@ export class NodeInlineEditor {
 			}
 
 			// WYSIWYG inline formatting shortcuts
-			if ((evt.ctrlKey || evt.metaKey) && !evt.altKey) {
-				const lowerKey = evt.key.toLowerCase();
-				if (lowerKey === "b" && !evt.shiftKey) {
-					evt.preventDefault();
-					this.toggleMarkOnSelection(richSession, "bold");
-					return;
-				}
-				if (lowerKey === "i" && !evt.shiftKey) {
-					evt.preventDefault();
-					this.toggleMarkOnSelection(richSession, "italic");
-					return;
-				}
-				if (lowerKey === "e" && !evt.shiftKey) {
-					evt.preventDefault();
-					this.toggleMarkOnSelection(richSession, "code");
-					return;
-				}
-				if (lowerKey === "x" && evt.shiftKey) {
-					evt.preventDefault();
-					this.toggleMarkOnSelection(richSession, "strikethrough");
-					return;
-				}
-				if (lowerKey === "h" && evt.shiftKey) {
-					evt.preventDefault();
-					this.toggleMarkOnSelection(richSession, "highlight");
-					return;
-				}
+			const shortcutMark = resolveRichShortcutMark(evt);
+			if (shortcutMark) {
+				evt.preventDefault();
+				this.toggleMarkOnSelection(richSession, shortcutMark);
+				return;
 			}
 
 			if (evt.key === "Backspace" || evt.key === "Delete") {
@@ -1656,15 +1602,11 @@ export class NodeInlineEditor {
 			if (evt.key === "Enter" && evt.shiftKey) {
 				evt.preventDefault();
 				const snap = this.readRichTextSnapshot(textEl);
-				const nextText =
-					snap.text.slice(0, snap.selection.start) +
-					"\n" +
-					snap.text.slice(snap.selection.end);
-				const nextCaret = snap.selection.start + 1;
-				this.writeRichTextSnapshot(
-					richSession,
-					nextText,
-					{ start: nextCaret, end: nextCaret },
+				void this.session.replaceSelectionText(
+					richSession.tpc,
+					snap.text,
+					snap.selection,
+					"\n",
 					true
 				);
 				return;
@@ -1708,34 +1650,34 @@ export class NodeInlineEditor {
 			if (!plainText) return;
 
 			const current = this.readRichTextSnapshot(textEl);
-			const nextText =
-				current.text.slice(0, current.selection.start) +
-				plainText +
-				current.text.slice(current.selection.end);
-			const nextCaret = current.selection.start + plainText.length;
-			this.writeRichTextSnapshot(
-				richSession,
-				nextText,
-				{ start: nextCaret, end: nextCaret },
-				true
-			);
-			this.session.refreshSuggester();
+			void this.session
+				.replaceSelectionText(
+					richSession.tpc,
+					current.text,
+					current.selection,
+					plainText,
+					true
+				)
+				.then(() => {
+					this.session.refreshSuggester();
+				});
 		});
 
 		textEl.addEventListener("blur", (evt) => {
 			const related = evt.relatedTarget as Node | null;
-			if (
-				related &&
-				(cardEl.contains(related) ||
-					this.popupEl?.contains(related) ||
-					this.formatToolbarEl?.contains(related))
-			) {
-				return;
+			const action = decideTextBlurAction({
+				relatedInsideCard: Boolean(related && cardEl.contains(related)),
+				relatedInsidePopup: Boolean(
+					related && this.popupEl?.contains(related)
+				),
+				relatedInsideToolbar: Boolean(
+					related && this.formatToolbarEl?.contains(related)
+				),
+				hasPendingExternalLink: this.session.hasPendingExternalLink(),
+			});
+			if (action === "commit") {
+				this.commitRichSession(richSession);
 			}
-			if (this.pendingExternalLink) {
-				return;
-			}
-			this.commitRichSession(richSession);
 		});
 	}
 
@@ -1743,7 +1685,7 @@ export class NodeInlineEditor {
 		if (richSession.finished) return;
 		richSession.finished = true;
 
-		this.pendingExternalLink = null;
+		this.session.cancelExternalLink();
 		this.isPointerSelecting = false;
 		this.hideFormatToolbar();
 
@@ -1775,7 +1717,7 @@ export class NodeInlineEditor {
 		if (richSession.finished) return;
 		richSession.finished = true;
 
-		this.pendingExternalLink = null;
+		this.session.cancelExternalLink();
 		this.isPointerSelecting = false;
 		this.hideFormatToolbar();
 
@@ -2192,14 +2134,10 @@ export class NodeInlineEditor {
 		inputBox: HTMLElement,
 		lockMinHeight = false
 	): void {
-		let left = 0;
-		let top = 0;
-		let cur: HTMLElement | null = tpc;
-		while (cur && cur !== mind.nodes) {
-			left += cur.offsetLeft;
-			top += cur.offsetTop;
-			cur = cur.offsetParent as HTMLElement | null;
-		}
+		const { left, top, width, height } = measureOffsetRelativeToNodes(
+			tpc,
+			mind.nodes
+		);
 
 		inputBox.style.removeProperty("left");
 		inputBox.style.removeProperty("top");
@@ -2211,8 +2149,8 @@ export class NodeInlineEditor {
 		inputBox.setCssProps({
 			"--mm-input-left": `${left}px`,
 			"--mm-input-top": `${top}px`,
-			"--mm-input-min-width": `${Math.max(120, tpc.offsetWidth)}px`,
-			"--mm-input-min-height": lockMinHeight ? `${tpc.offsetHeight}px` : "auto",
+			"--mm-input-min-width": `${Math.max(120, width)}px`,
+			"--mm-input-min-height": lockMinHeight ? `${height}px` : "auto",
 		});
 	}
 
@@ -2271,6 +2209,10 @@ export class NodeInlineEditor {
 				.setTitle("新增外部链接")
 				.setIcon("external-link")
 				.onClick(() => {
+					if (richSession && !richSession.finished) {
+						this.openInlineExternalLinkBar();
+						return;
+					}
 					void this.session.applyInlineFormat(
 						editingNode,
 						fullText,
@@ -2302,7 +2244,7 @@ export class NodeInlineEditor {
 		const formatItems: Array<{
 			title: string;
 			icon: string;
-			kind: InlineFormatKind;
+			kind: RichMarkKind;
 		}> = [
 			{ title: "加粗", icon: "bold", kind: "bold" },
 			{ title: "斜体", icon: "italic", kind: "italic" },
@@ -2317,6 +2259,10 @@ export class NodeInlineEditor {
 					.setTitle(fmt.title)
 					.setIcon(fmt.icon)
 					.onClick(() => {
+						if (richSession && !richSession.finished) {
+							this.toggleMarkOnSelection(richSession, fmt.kind);
+							return;
+						}
 						void this.session.applyInlineFormat(
 							editingNode,
 							fullText,
