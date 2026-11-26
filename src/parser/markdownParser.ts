@@ -2,8 +2,10 @@ import type { MindElixirData, NodeObj } from "mind-elixir";
 import {
 	MINDMAP_DIRECTION_KEY,
 	MINDMAP_FRONTMATTER_KEY,
+	MINDMAP_STYLE_KEY,
 	type MarkdownSerializeStyle,
 	type MindMapDirection,
+	type MindMapStylePreset,
 	codeToDirection,
 	directionToCode,
 } from "../settings/types";
@@ -26,6 +28,7 @@ export interface ParsedMindMap {
 	frontmatter: FrontmatterResult;
 	data: MindElixirData;
 	direction: MindMapDirection;
+	stylePreset?: MindMapStylePreset;
 	preservedBlocks: PreservedMarkdownBlock[];
 }
 
@@ -33,6 +36,7 @@ export interface SerializeOptions {
 	existingFrontmatterRaw?: string | null;
 	style: MarkdownSerializeStyle;
 	direction?: MindMapDirection;
+	stylePreset?: MindMapStylePreset;
 	preservedBlocks?: PreservedMarkdownBlock[];
 }
 
@@ -113,10 +117,13 @@ export function ensureMindMapFrontmatter(
 export function createDefaultMindMapMarkdown(
 	title: string,
 	direction: MindMapDirection = "side",
-	style: MarkdownSerializeStyle = "heading-list"
+	style: MarkdownSerializeStyle = "heading-list",
+	stylePreset: MindMapStylePreset = "classic"
 ): string {
 	const safeTitle = title.trim() || "中心主题";
-	const frontmatter = `---\n${MINDMAP_FRONTMATTER_KEY}: basic\n${MINDMAP_DIRECTION_KEY}: ${direction}\n---\n\n`;
+	const styleLine =
+		stylePreset !== "classic" ? `${MINDMAP_STYLE_KEY}: ${stylePreset}\n` : "";
+	const frontmatter = `---\n${MINDMAP_FRONTMATTER_KEY}: basic\n${MINDMAP_DIRECTION_KEY}: ${direction}\n${styleLine}---\n\n`;
 
 	if (style === "list") {
 		return (
@@ -168,6 +175,13 @@ function parseDirectionValue(val?: string): MindMapDirection {
 		return val;
 	}
 	return "side";
+}
+
+export function parseStylePresetValue(val?: string): MindMapStylePreset | undefined {
+	if (val === "classic" || val === "card" || val === "bordered") {
+		return val;
+	}
+	return undefined;
 }
 
 function unescapeTopic(text: string): string {
@@ -360,6 +374,7 @@ export function markdownToMindMap(
 ): ParsedMindMap {
 	const frontmatter = extractFrontmatter(markdown);
 	const direction = parseDirectionValue(frontmatter.properties[MINDMAP_DIRECTION_KEY]);
+	const stylePreset = parseStylePresetValue(frontmatter.properties[MINDMAP_STYLE_KEY]);
 
 	let body = frontmatter.body;
 	let extra: ExtraMetadata | null = null;
@@ -432,6 +447,7 @@ export function markdownToMindMap(
 		frontmatter,
 		data,
 		direction,
+		stylePreset,
 		preservedBlocks,
 	};
 }
@@ -831,10 +847,26 @@ export function mindMapToMarkdown(
 	options: SerializeOptions
 ): string {
 	const direction = options.direction ?? codeToDirection(data.direction);
-	const frontmatterBody = upsertFrontmatterLines(options.existingFrontmatterRaw, {
+	const frontmatterUpdates: Record<string, string> = {
 		[MINDMAP_FRONTMATTER_KEY]: "basic",
 		[MINDMAP_DIRECTION_KEY]: direction,
-	});
+	};
+	const existingHasStyle = Boolean(
+		options.existingFrontmatterRaw &&
+			new RegExp(`^\\s*${MINDMAP_STYLE_KEY}\\s*:`, "m").test(
+				options.existingFrontmatterRaw
+			)
+	);
+	if (
+		options.stylePreset &&
+		(options.stylePreset !== "classic" || existingHasStyle)
+	) {
+		frontmatterUpdates[MINDMAP_STYLE_KEY] = options.stylePreset;
+	}
+	const frontmatterBody = upsertFrontmatterLines(
+		options.existingFrontmatterRaw,
+		frontmatterUpdates
+	);
 
 	const root = data.nodeData;
 	const { preambleBlocks, blocksAfterNode, trailingBlocks } =

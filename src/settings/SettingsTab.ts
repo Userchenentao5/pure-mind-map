@@ -6,6 +6,7 @@ import {
 	type SettingDefinitionItem,
 } from "obsidian";
 import {
+	STYLE_PRESET_LABELS,
 	formatHotkeyForDisplay,
 	normalizeHotkeyKey,
 } from "../canvas/canvasConfig";
@@ -17,6 +18,7 @@ import {
 	type MarkdownSerializeStyle,
 	type MindMapDirection,
 	type MindMapHotkeys,
+	type MindMapStylePreset,
 	type SplitLayout,
 	type ThemeMode,
 } from "./types";
@@ -131,6 +133,16 @@ export class MindMapSettingTab extends PluginSettingTab {
 							key: "defaultDirection",
 							options: DIRECTION_OPTIONS,
 							defaultValue: DEFAULT_SETTINGS.defaultDirection,
+						},
+					},
+					{
+						name: "默认脑图样式",
+						desc: "新建脑图或文件未指定 `mindmap-style` 时使用的节点与连线风格",
+						control: {
+							type: "dropdown",
+							key: "defaultStylePreset",
+							options: STYLE_PRESET_LABELS,
+							defaultValue: DEFAULT_SETTINGS.defaultStylePreset,
 						},
 					},
 					{
@@ -267,6 +279,8 @@ export class MindMapSettingTab extends PluginSettingTab {
 				return this.plugin.settings.autoOpenMindMap;
 			case "defaultDirection":
 				return this.plugin.settings.defaultDirection;
+			case "defaultStylePreset":
+				return this.plugin.settings.defaultStylePreset;
 			case "defaultSplitLayout":
 				return this.plugin.settings.defaultSplitLayout;
 			case "markdownStyle":
@@ -311,6 +325,11 @@ export class MindMapSettingTab extends PluginSettingTab {
 			case "defaultDirection":
 				this.plugin.settings.defaultDirection = value as MindMapDirection;
 				await this.plugin.saveSettings();
+				return;
+			case "defaultStylePreset":
+				this.plugin.settings.defaultStylePreset = value as MindMapStylePreset;
+				await this.plugin.saveSettings();
+				this.plugin.refreshOpenMindMaps();
 				return;
 			case "defaultSplitLayout":
 				this.plugin.settings.defaultSplitLayout = value as SplitLayout;
@@ -398,6 +417,18 @@ export class MindMapSettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.defaultDirection)
 					.onChange(async (value) => {
 						await this.setControlValue("defaultDirection", value);
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("默认脑图样式")
+			.setDesc("新建脑图或文件未指定 `mindmap-style` 时使用的节点与连线风格")
+			.addDropdown((dropdown) =>
+				dropdown
+					.addOptions(STYLE_PRESET_LABELS)
+					.setValue(this.plugin.settings.defaultStylePreset)
+					.onChange(async (value) => {
+						await this.setControlValue("defaultStylePreset", value);
 					})
 			);
 

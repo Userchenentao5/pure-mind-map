@@ -1,4 +1,5 @@
 import {
+	Menu,
 	Notice,
 	TFile,
 	TextFileView,
@@ -19,6 +20,7 @@ import {
 	SPLIT_LEFT_RIGHT_ICON_ID,
 	SPLIT_TOP_BOTTOM_ICON_ID,
 	type MindMapDirection,
+	type MindMapStylePreset,
 	codeToDirection,
 	directionToCode,
 } from "../settings/types";
@@ -27,6 +29,7 @@ import { NodeInlineEditor } from "../editor/NodeInlineEditor";
 import { MindMapExporter } from "../export/MindMapExporter";
 import type { ExportFormat } from "../export/MindMapExportPipeline";
 import {
+	STYLE_PRESET_LABELS,
 	buildCanvasKeypressOptions,
 	buildCanvasTheme,
 	buildContextMenuOption,
@@ -34,6 +37,11 @@ import {
 	isImageEventTarget,
 	type CanvasRelinkScheduler,
 } from "../canvas/canvasConfig";
+import {
+	findMatchingNodes,
+	stepSearchMatchIndex,
+	type NodeSearchMatch,
+} from "../canvas/nodeSearch";
 
 export class MindMapView extends TextFileView {
 	private plugin: SimpleMindMapPlugin;
@@ -50,11 +58,22 @@ export class MindMapView extends TextFileView {
 	private exporter: MindMapExporter;
 	private relinkScheduler: CanvasRelinkScheduler;
 	private nodesResizeObserver: ResizeObserver | null = null;
+	private quickAddBtnEl: HTMLButtonElement | null = null;
+	private rootCollapseBtnEl: HTMLButtonElement | null = null;
+	private isRootCollapsed = false;
+	private searchBarEl: HTMLElement | null = null;
+	private searchInputEl: HTMLInputElement | null = null;
+	private searchCountEl: HTMLElement | null = null;
+	private searchMatches: NodeSearchMatch[] = [];
+	private searchActiveIndex = -1;
 
 	constructor(leaf: WorkspaceLeaf, plugin: SimpleMindMapPlugin) {
 		super(leaf);
 		this.plugin = plugin;
-		this.document = new MindMapDocument(plugin.settings.defaultDirection);
+		this.document = new MindMapDocument(
+			plugin.settings.defaultDirection,
+			plugin.settings.defaultStylePreset
+		);
 		this.inlineEditor = new NodeInlineEditor(this.app, {
 			getMind: () => this.mind,
 			getSourcePath: () => this.file?.path ?? "",
@@ -120,6 +139,14 @@ export class MindMapView extends TextFileView {
 
 		this.toolbarEl = this.contentEl.createDiv({ cls: "mm-floating-toolbar" });
 		this.buildToolbar(this.toolbarEl);
+		this.buildSearchBar(this.contentEl);
+
+		this.registerDomEvent(
+			window,
+			"keydown",
+			(evt: KeyboardEvent) => this.handleGlobalFindShortcut(evt),
+			true
+		);
 
 		this.mapHostEl = this.contentEl.createDiv({ cls: "mm-canvas-host" });
 		this.registerDomEvent(
@@ -157,6 +184,7 @@ export class MindMapView extends TextFileView {
 	}
 
 	async onClose(): Promise<void> {
+		this.closeNodeSearch(false);
 		this.inlineEditor.detach();
 		this.destroyMindMap();
 	}
@@ -202,6 +230,7 @@ export class MindMapView extends TextFileView {
 		const decision = this.document.reconcileExternalMarkdown(data, {
 			fallbackTitle: this.file?.basename ?? "中心主题",
 			defaultDirection: this.plugin.settings.defaultDirection,
+			defaultStylePreset: this.plugin.settings.defaultStylePreset,
 			clear,
 			hasCanvas: this.mind !== null,
 		});
@@ -210,24 +239,33 @@ export class MindMapView extends TextFileView {
 			return;
 		}
 
+		this.applyStylePresetClass();
+
 		if (decision.action === "mount") {
 			void this.mountMindMap(decision.data);
 		} else if (this.mind) {
 			this.isInternalRefresh = true;
 			try {
 				this.mind.direction = directionToCode(decision.direction);
+				this.applyCurrentTheme();
 				this.mind.refresh(decision.data);
 				this.mind.clearHistory?.();
 			} finally {
 				this.isInternalRefresh = false;
 			}
+			this.syncCollapseBadges(this.mind);
+			this.updateQuickAddButton(this.mind);
 			this.updateDirectionButtons();
 		}
 		this.refreshSplitButtons();
 	}
 
 	clear(): void {
-		this.document.clear(this.plugin.settings.defaultDirection);
+		this.closeNodeSearch(false);
+		this.document.clear(
+			this.plugin.settings.defaultDirection,
+			this.plugin.settings.defaultStylePreset
+		);
 		this.destroyMindMap();
 	}
 
@@ -310,8 +348,19 @@ export class MindMapView extends TextFileView {
 
 	public refreshFromSettings(): void {
 		if (!this.mind) return;
+		if (
+			!this.document.hasExplicitStyleInNote() &&
+			this.document.stylePreset !== this.plugin.settings.defaultStylePreset
+		) {
+			this.document.setStylePreset(
+				this.plugin.settings.defaultStylePreset,
+				false
+			);
+			this.applyStylePresetClass();
+		}
 		this.applyCurrentTheme();
 		this.mind.changeCompact(this.plugin.settings.compactMode);
+		this.mind.linkDiv();
 
 		// Remount canvas when hotkeys or context menu language changed, preserving viewport/undo otherwise
 		const nextOptionsKey = this.getMountedCanvasOptionsKey();
@@ -340,12 +389,281 @@ export class MindMapView extends TextFileView {
 		this.inlineEditor.openInsertImageModal();
 	}
 
+	public openNodeSearch(): void {
+		if (!this.searchBarEl || !this.searchInputEl) return;
+		this.inlineEditor.commitActiveEdit();
+		this.searchBarEl.removeClass("mm-is-hidden");
+		this.searchInputEl.focus();
+		this.searchInputEl.select();
+		if (this.searchInputEl.value.trim()) {
+			this.runNodeSearch(this.searchInputEl.value, false);
+		} else {
+			this.updateSearchCounter();
+		}
+	}
+
+	public closeNodeSearch(restoreCanvasFocus = true): void {
+		this.searchBarEl?.addClass("mm-is-hidden");
+		this.searchMatches = [];
+		this.searchActiveIndex = -1;
+		this.clearSearchHighlights();
+		if (restoreCanvasFocus) {
+			this.mind?.container?.focus();
+		}
+	}
+
+	private handleGlobalFindShortcut(evt: KeyboardEvent): void {
+		if (
+			!(evt.ctrlKey || evt.metaKey) ||
+			evt.altKey ||
+			evt.shiftKey ||
+			evt.key.toLowerCase() !== "f"
+		) {
+			return;
+		}
+		const activeView = this.app.workspace.getActiveViewOfType(MindMapView);
+		const target = evt.target as Node | null;
+		const isInsideThisView = Boolean(target && this.contentEl.contains(target));
+		if (activeView !== this && !isInsideThisView) {
+			return;
+		}
+		evt.preventDefault();
+		evt.stopPropagation();
+		this.openNodeSearch();
+	}
+
+	private buildSearchBar(container: HTMLElement): void {
+		const bar = container.createDiv({ cls: "mm-search-bar mm-is-hidden" });
+		const stopPointer = (evt: Event) => {
+			evt.stopPropagation();
+		};
+		bar.addEventListener("pointerdown", stopPointer);
+		bar.addEventListener("mousedown", stopPointer);
+		bar.addEventListener("click", stopPointer);
+
+		const iconEl = bar.createSpan({ cls: "mm-search-icon" });
+		setIcon(iconEl, "search");
+
+		const input = bar.createEl("input", {
+			cls: "mm-search-input",
+			attr: {
+				type: "text",
+				placeholder: "搜索节点内容...",
+				"aria-label": "搜索节点内容",
+			},
+		});
+		const countEl = bar.createSpan({ cls: "mm-search-count" });
+
+		const prevBtn = bar.createEl("button", {
+			cls: "mm-search-btn",
+			attr: {
+				type: "button",
+				title: "上一个匹配 (Shift+Enter)",
+				"aria-label": "上一个匹配",
+			},
+		});
+		setIcon(prevBtn, "chevron-up");
+
+		const nextBtn = bar.createEl("button", {
+			cls: "mm-search-btn",
+			attr: {
+				type: "button",
+				title: "下一个匹配 (Enter)",
+				"aria-label": "下一个匹配",
+			},
+		});
+		setIcon(nextBtn, "chevron-down");
+
+		const closeBtn = bar.createEl("button", {
+			cls: "mm-search-btn",
+			attr: {
+				type: "button",
+				title: "关闭搜索 (Esc)",
+				"aria-label": "关闭搜索",
+			},
+		});
+		setIcon(closeBtn, "x");
+
+		input.addEventListener("input", () => {
+			this.runNodeSearch(input.value, true);
+		});
+		input.addEventListener("keydown", (evt) => {
+			evt.stopPropagation();
+			if (evt.isComposing || evt.key === "Process") return;
+			if (evt.key === "Enter") {
+				evt.preventDefault();
+				this.stepNodeSearch(evt.shiftKey ? -1 : 1);
+			} else if (evt.key === "Escape") {
+				evt.preventDefault();
+				this.closeNodeSearch(true);
+			}
+		});
+
+		prevBtn.addEventListener("click", () => {
+			this.stepNodeSearch(-1);
+			input.focus();
+		});
+		nextBtn.addEventListener("click", () => {
+			this.stepNodeSearch(1);
+			input.focus();
+		});
+		closeBtn.addEventListener("click", () => {
+			this.closeNodeSearch(true);
+		});
+
+		this.searchBarEl = bar;
+		this.searchInputEl = input;
+		this.searchCountEl = countEl;
+	}
+
+	private runNodeSearch(query: string, jumpToFirst: boolean): void {
+		this.clearSearchHighlights();
+		if (!this.mind || !query.trim()) {
+			this.searchMatches = [];
+			this.searchActiveIndex = -1;
+			this.updateSearchCounter();
+			return;
+		}
+
+		const data = this.mind.getData();
+		this.searchMatches = findMatchingNodes(data.nodeData, query);
+		if (this.searchMatches.length === 0) {
+			this.searchActiveIndex = -1;
+			this.updateSearchCounter();
+			return;
+		}
+
+		this.searchActiveIndex = jumpToFirst
+			? 0
+			: Math.max(0, Math.min(this.searchActiveIndex, this.searchMatches.length - 1));
+		this.focusActiveSearchMatch();
+	}
+
+	private stepNodeSearch(delta: 1 | -1): void {
+		if (!this.mind || !this.searchInputEl) return;
+		const query = this.searchInputEl.value;
+		if (!query.trim()) return;
+
+		if (this.searchMatches.length === 0) {
+			this.runNodeSearch(query, true);
+			return;
+		}
+
+		this.searchActiveIndex = stepSearchMatchIndex(
+			this.searchActiveIndex,
+			this.searchMatches.length,
+			delta
+		);
+		this.focusActiveSearchMatch();
+	}
+
+	private focusActiveSearchMatch(): void {
+		const mind = this.mind;
+		if (!mind || this.searchActiveIndex < 0) {
+			this.updateSearchCounter();
+			return;
+		}
+		const activeMatch = this.searchMatches[this.searchActiveIndex];
+		if (!activeMatch) {
+			this.updateSearchCounter();
+			return;
+		}
+
+		// Auto-expand root or any collapsed ancestor along the path without polluting undo history
+		if (this.isRootCollapsed && activeMatch.ancestorIds.length > 0) {
+			this.setRootCollapsed(mind, false);
+		}
+		for (const ancestorId of activeMatch.ancestorIds) {
+			try {
+				const ancestorEl = mind.findEle(ancestorId);
+				if (ancestorEl && ancestorEl.nodeObj.expanded === false) {
+					mind.expandNode(ancestorEl, true, { silent: true });
+				}
+			} catch {
+				// Ignore if ancestor is not currently mounted
+			}
+		}
+
+		this.applySearchHighlights(activeMatch.nodeId);
+
+		try {
+			const targetEl = mind.findEle(activeMatch.nodeId);
+			if (targetEl) {
+				mind.selectNode(targetEl);
+				mind.scrollIntoView(targetEl);
+			}
+		} catch {
+			// Node may not be mounted in focus mode
+		}
+
+		this.updateSearchCounter();
+	}
+
+	private applySearchHighlights(activeNodeId: string): void {
+		this.clearSearchHighlights();
+		const mind = this.mind;
+		if (!mind) return;
+		for (const match of this.searchMatches) {
+			try {
+				const el = mind.findEle(match.nodeId);
+				if (!el) continue;
+				el.addClass("mm-search-match");
+				if (match.nodeId === activeNodeId) {
+					el.addClass("mm-search-match-active");
+				}
+			} catch {
+				// Ignore unmounted/collapsed nodes
+			}
+		}
+	}
+
+	private clearSearchHighlights(): void {
+		if (!this.mind?.nodes) return;
+		this.mind.nodes
+			.querySelectorAll(".mm-search-match, .mm-search-match-active")
+			.forEach((el) => {
+				el.removeClass("mm-search-match");
+				el.removeClass("mm-search-match-active");
+			});
+	}
+
+	private updateSearchCounter(): void {
+		if (!this.searchCountEl || !this.searchInputEl) return;
+		const hasQuery = this.searchInputEl.value.trim().length > 0;
+		if (!hasQuery) {
+			this.searchCountEl.setText("");
+			this.searchCountEl.removeClass("is-empty");
+			return;
+		}
+		if (this.searchMatches.length === 0) {
+			this.searchCountEl.setText("无匹配");
+			this.searchCountEl.addClass("is-empty");
+			return;
+		}
+		this.searchCountEl.setText(
+			`${this.searchActiveIndex + 1} / ${this.searchMatches.length}`
+		);
+		this.searchCountEl.removeClass("is-empty");
+	}
+
 	private destroyMindMap(): void {
+		this.clearSearchHighlights();
+		this.searchMatches = [];
+		this.searchActiveIndex = -1;
 		this.relinkScheduler.cancel();
 		if (this.nodesResizeObserver) {
 			this.nodesResizeObserver.disconnect();
 			this.nodesResizeObserver = null;
 		}
+		if (this.quickAddBtnEl) {
+			this.quickAddBtnEl.remove();
+			this.quickAddBtnEl = null;
+		}
+		if (this.rootCollapseBtnEl) {
+			this.rootCollapseBtnEl.remove();
+			this.rootCollapseBtnEl = null;
+		}
+		this.isRootCollapsed = false;
 		this.inlineEditor.destroy();
 		if (this.mind) {
 			try {
@@ -434,7 +752,12 @@ export class MindMapView extends TextFileView {
 			this.inlineEditor.openRichEditor(mind, el, rawEditTopic);
 		};
 		this.mind = mind;
+		this.isRootCollapsed = false;
+		this.applyStylePresetClass();
 		await mind.init(data);
+		this.setupQuickAddButton(mind);
+		this.setupRootCollapseButton(mind);
+		this.syncCollapseBadges(mind);
 		this.observeNodesLayout(mind);
 		this.updateDirectionButtons();
 
@@ -444,18 +767,50 @@ export class MindMapView extends TextFileView {
 				if (this.isCanvasLayoutReady()) {
 					mind.linkDiv();
 				}
+				this.syncCollapseBadges(mind);
+				this.updateQuickAddButton(mind);
 				mind.toCenter();
 			}
+		});
+
+		mind.container.addEventListener("focus", () => {
+			if (this.mind === mind) {
+				this.updateQuickAddButton(mind);
+			}
+		});
+
+		mind.bus.addListener("selectNewNode", () => {
+			this.updateQuickAddButton(mind);
+		});
+		mind.bus.addListener("selectNodes", () => {
+			this.updateQuickAddButton(mind);
+		});
+		mind.bus.addListener("unselectNodes", () => {
+			this.updateQuickAddButton(mind);
+		});
+		mind.bus.addListener("linkDiv", () => {
+			this.syncCollapseBadges(mind);
+			this.updateQuickAddButton(mind);
 		});
 
 		mind.bus.addListener("operation", (op) => {
 			if (this.isInternalRefresh) return;
 			if (op.name === "beginEdit") {
+				this.hideQuickAddButton();
 				queueMicrotask(() =>
 					this.inlineEditor.onBeginNodeEdit(mind, op.target.id)
 				);
 				return;
 			}
+			if (op.name === "addChild" && this.isRootCollapsed) {
+				this.setRootCollapsed(mind, false);
+			}
+			queueMicrotask(() => {
+				if (this.mind === mind) {
+					this.syncCollapseBadges(mind);
+					this.updateQuickAddButton(mind);
+				}
+			});
 			this.markLocalEditAndScheduleSave();
 		});
 
@@ -463,12 +818,305 @@ export class MindMapView extends TextFileView {
 			if (this.isInternalRefresh) return;
 			this.document.setDirection(codeToDirection(dir));
 			this.updateDirectionButtons();
+			this.updateQuickAddButton(mind);
 			this.markLocalEditAndScheduleSave();
 		});
 
 		mind.bus.addListener("refresh", () => {
 			if (this.isInternalRefresh) return;
+			this.syncCollapseBadges(mind);
+			this.updateQuickAddButton(mind);
 			this.markLocalEditAndScheduleSave();
+		});
+	}
+
+	private applyStylePresetClass(): void {
+		if (!this.mapHostEl) return;
+		const preset = this.document.stylePreset;
+		this.mapHostEl.toggleClass("mm-style-classic", preset === "classic");
+		this.mapHostEl.toggleClass("mm-style-card", preset === "card");
+		this.mapHostEl.toggleClass("mm-style-bordered", preset === "bordered");
+	}
+
+	private setStylePreset(preset: MindMapStylePreset): void {
+		if (!this.mind || this.document.stylePreset === preset) return;
+		this.document.setStylePreset(preset, true);
+		this.applyStylePresetClass();
+		this.applyCurrentTheme();
+		this.mind.linkDiv();
+		this.syncCollapseBadges(this.mind);
+		this.updateQuickAddButton(this.mind);
+		this.markLocalEditAndScheduleSave();
+	}
+
+	private openStylePresetMenu(evt: MouseEvent): void {
+		const menu = new Menu();
+		const current = this.document.stylePreset;
+		const presets: MindMapStylePreset[] = ["classic", "card", "bordered"];
+		for (const preset of presets) {
+			menu.addItem((item) => {
+				item
+					.setTitle(STYLE_PRESET_LABELS[preset])
+					.setChecked(current === preset)
+					.onClick(() => {
+						this.setStylePreset(preset);
+					});
+			});
+		}
+		menu.showAtMouseEvent(evt);
+	}
+
+	private setupQuickAddButton(mind: MindElixir): void {
+		if (this.quickAddBtnEl) {
+			this.quickAddBtnEl.remove();
+			this.quickAddBtnEl = null;
+		}
+		const btn = mind.nodes.createEl("button", {
+			cls: "mm-node-quick-add mm-is-hidden",
+			attr: {
+				type: "button",
+				title: "添加子节点 (Tab)",
+				"aria-label": "添加子节点",
+			},
+		});
+		setIcon(btn, "plus");
+		const stop = (evt: Event) => {
+			evt.preventDefault();
+			evt.stopPropagation();
+		};
+		btn.addEventListener("pointerdown", stop);
+		btn.addEventListener("pointerup", stop);
+		btn.addEventListener("mousedown", stop);
+		btn.addEventListener("click", (evt) => {
+			stop(evt);
+			if (this.mind !== mind || !mind.currentNode) return;
+			if (
+				this.isRootCollapsed &&
+				mind.currentNode.parentElement?.classList.contains("me-root")
+			) {
+				this.setRootCollapsed(mind, false);
+			}
+			void mind.addChild(mind.currentNode);
+		});
+		this.quickAddBtnEl = btn;
+	}
+
+	private setupRootCollapseButton(mind: MindElixir): void {
+		if (this.rootCollapseBtnEl) {
+			this.rootCollapseBtnEl.remove();
+			this.rootCollapseBtnEl = null;
+		}
+		const btn = mind.nodes.createEl("button", {
+			cls: "mm-root-collapse-btn mm-is-hidden",
+			attr: {
+				type: "button",
+				title: "收起子节点",
+				"aria-label": "收起子节点",
+			},
+		});
+		const stop = (evt: Event) => {
+			evt.preventDefault();
+			evt.stopPropagation();
+		};
+		btn.addEventListener("pointerdown", stop);
+		btn.addEventListener("pointerup", stop);
+		btn.addEventListener("mousedown", stop);
+		btn.addEventListener("click", (evt) => {
+			stop(evt);
+			if (this.mind !== mind) return;
+			this.setRootCollapsed(mind, !this.isRootCollapsed);
+		});
+		this.rootCollapseBtnEl = btn;
+	}
+
+	private setRootCollapsed(mind: MindElixir, collapsed: boolean): void {
+		if (this.isRootCollapsed === collapsed) return;
+		const rootEl = mind.nodes.querySelector<HTMLElement>(".me-root");
+		const beforeRect = rootEl?.getBoundingClientRect() ?? null;
+
+		this.isRootCollapsed = collapsed;
+		mind.nodes.toggleClass("mm-root-collapsed", collapsed);
+
+		if (!collapsed) {
+			mind.linkDiv();
+		}
+
+		if (rootEl && beforeRect) {
+			const afterRect = rootEl.getBoundingClientRect();
+			const dx = beforeRect.left - afterRect.left;
+			const dy = beforeRect.top - afterRect.top;
+			if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+				mind.move(dx, dy);
+			}
+		}
+
+		this.syncCollapseBadges(mind);
+		this.updateQuickAddButton(mind);
+	}
+
+	private hideQuickAddButton(): void {
+		this.quickAddBtnEl?.addClass("mm-is-hidden");
+		this.rootCollapseBtnEl?.addClass("mm-is-hidden");
+	}
+
+	private updateRootCollapseButton(mind: MindElixir): void {
+		const btn = this.rootCollapseBtnEl;
+		if (!btn || this.mind !== mind) return;
+
+		const childCount = mind.nodeData?.children?.length ?? 0;
+		const rootTpc = mind.nodes.querySelector<HTMLElement>(".me-root > .me-tpc");
+		const isRootSelected = Boolean(
+			mind.currentNodes.length === 1 &&
+				mind.currentNode &&
+				mind.currentNode === rootTpc
+		);
+
+		if (
+			this.document.stylePreset === "classic" ||
+			childCount === 0 ||
+			!rootTpc ||
+			!mind.nodes.isConnected ||
+			mind.nodes.querySelector("#input-box") ||
+			isRootSelected
+		) {
+			btn.addClass("mm-is-hidden");
+			return;
+		}
+
+		let left = 0;
+		let top = 0;
+		let cur: HTMLElement | null = rootTpc;
+		while (cur && cur !== mind.nodes) {
+			left += cur.offsetLeft;
+			top += cur.offsetTop;
+			cur = cur.offsetParent as HTMLElement | null;
+		}
+
+		const w = rootTpc.offsetWidth;
+		const h = rootTpc.offsetHeight;
+		if (w === 0 && h === 0) {
+			btn.addClass("mm-is-hidden");
+			return;
+		}
+
+		const btnSize = 20;
+		const isDown = mind.direction === 3;
+		const isLeft = mind.direction === 0;
+
+		let x: number;
+		let y: number;
+		let dirAttr: "right" | "left" | "down";
+
+		if (isDown) {
+			x = left + w / 2 - btnSize / 2;
+			y = top + h + 6;
+			dirAttr = "down";
+		} else if (isLeft) {
+			x = left - btnSize - 6;
+			y = top + h / 2 - btnSize / 2;
+			dirAttr = "left";
+		} else {
+			x = left + w + 6;
+			y = top + h / 2 - btnSize / 2;
+			dirAttr = "right";
+		}
+
+		btn.dataset.childCount = String(childCount);
+		btn.dataset.dir = dirAttr;
+		btn.toggleClass("is-collapsed", this.isRootCollapsed);
+		const title = this.isRootCollapsed
+			? `展开 ${childCount} 个分支`
+			: "收起子节点";
+		btn.setAttribute("title", title);
+		btn.setAttribute("aria-label", title);
+		btn.setCssProps({
+			"--mm-rc-left": `${Math.round(x)}px`,
+			"--mm-rc-top": `${Math.round(y)}px`,
+		});
+		btn.removeClass("mm-is-hidden");
+	}
+
+	private updateQuickAddButton(mind: MindElixir): void {
+		this.updateRootCollapseButton(mind);
+		const btn = this.quickAddBtnEl;
+		if (!btn || this.mind !== mind) return;
+
+		if (
+			this.document.stylePreset === "classic" ||
+			!mind.nodes.isConnected ||
+			mind.nodes.querySelector("#input-box") ||
+			mind.currentNodes.length !== 1 ||
+			!mind.currentNode
+		) {
+			btn.addClass("mm-is-hidden");
+			return;
+		}
+
+		const tpc = mind.currentNode;
+		if (!tpc.isConnected) {
+			btn.addClass("mm-is-hidden");
+			return;
+		}
+
+		let left = 0;
+		let top = 0;
+		let cur: HTMLElement | null = tpc;
+		while (cur && cur !== mind.nodes) {
+			left += cur.offsetLeft;
+			top += cur.offsetTop;
+			cur = cur.offsetParent as HTMLElement | null;
+		}
+
+		const w = tpc.offsetWidth;
+		const h = tpc.offsetHeight;
+		if (w === 0 && h === 0) {
+			btn.addClass("mm-is-hidden");
+			return;
+		}
+
+		const btnSize = 20;
+		const parentEl = tpc.parentElement;
+		const isRoot = Boolean(parentEl?.classList.contains("me-root"));
+		const isDown = mind.direction === 3;
+		const isLhs = Boolean(tpc.closest(".lhs"));
+		const isLeftRoot = isRoot && mind.direction === 0;
+
+		let x: number;
+		let y: number;
+
+		// Place (+) cleanly on the outgoing connector stub (same slot as collapse/expand, mutually exclusive)
+		if (isDown) {
+			x = left + w / 2 - btnSize / 2;
+			y = top + h + 6;
+		} else if (isLhs || isLeftRoot) {
+			x = left - btnSize - 6;
+			y = top + h / 2 - btnSize / 2;
+		} else {
+			x = left + w + 6;
+			y = top + h / 2 - btnSize / 2;
+		}
+
+		btn.setCssProps({
+			"--mm-qa-left": `${Math.round(x)}px`,
+			"--mm-qa-top": `${Math.round(y)}px`,
+		});
+		btn.removeClass("mm-is-hidden");
+	}
+
+	private syncCollapseBadges(mind: MindElixir): void {
+		if (!mind.nodes) return;
+		const expanders = mind.nodes.querySelectorAll<HTMLElement>(".me-parent > .me-epd");
+		expanders.forEach((epd) => {
+			const parentEl = epd.parentElement;
+			const tpc = parentEl?.firstElementChild as Topic | null;
+			const count = tpc?.nodeObj?.children?.length ?? 0;
+			epd.dataset.childCount = String(count);
+			const isExpanded = epd.classList.contains("minus");
+			const title = isExpanded
+				? "收起子节点"
+				: `展开 ${count} 个子节点`;
+			epd.setAttribute("title", title);
+			epd.setAttribute("aria-label", title);
 		});
 	}
 
@@ -484,7 +1132,8 @@ export class MindMapView extends TextFileView {
 		return buildCanvasTheme(
 			this.plugin.settings.themeMode,
 			activeDocument.body.classList.contains("theme-dark"),
-			(name) => styles.getPropertyValue(name)
+			(name) => styles.getPropertyValue(name),
+			this.document.stylePreset
 		);
 	}
 
@@ -596,7 +1245,7 @@ export class MindMapView extends TextFileView {
 		const addBtn = (
 			icon: string,
 			title: string,
-			onClick: () => void,
+			onClick: (evt: MouseEvent) => void,
 			extraClass?: string
 		): HTMLButtonElement => {
 			const btn = container.createEl("button", {
@@ -606,7 +1255,7 @@ export class MindMapView extends TextFileView {
 			setIcon(btn, icon);
 			btn.addEventListener("click", (e) => {
 				e.stopPropagation();
-				onClick();
+				onClick(e);
 			});
 			return btn;
 		};
@@ -663,6 +1312,12 @@ export class MindMapView extends TextFileView {
 			() => this.setLayoutDirection("down"),
 			"mm-dir-btn mm-dir-down"
 		);
+		addBtn(
+			"palette",
+			"切换脑图样式（经典导图 / 卡片逻辑图 / 柔和卡片）",
+			(evt) => this.openStylePresetMenu(evt),
+			"mm-style-btn"
+		);
 
 		addDivider();
 
@@ -680,6 +1335,9 @@ export class MindMapView extends TextFileView {
 		});
 		addBtn("maximize-2", "自适应画布", () => {
 			this.mind?.scaleFit();
+		});
+		addBtn("search", "搜索节点 (Ctrl+F)", () => {
+			this.openNodeSearch();
 		});
 
 		addDivider();

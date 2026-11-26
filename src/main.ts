@@ -26,6 +26,7 @@ import {
 	type LeafSnapshot,
 	type ViewStateTarget,
 } from "./session/WorkspaceSession";
+import { NewMindMapModal } from "./modals/NewMindMapModal";
 import { MindMapSettingTab } from "./settings/SettingsTab";
 import {
 	DEFAULT_HOTKEYS,
@@ -38,7 +39,9 @@ import {
 	SPLIT_LEFT_RIGHT_ICON_SVG,
 	SPLIT_TOP_BOTTOM_ICON_ID,
 	SPLIT_TOP_BOTTOM_ICON_SVG,
+	type MindMapDirection,
 	type MindMapSettings,
+	type MindMapStylePreset,
 } from "./settings/types";
 import { MindMapView } from "./views/MindMapView";
 
@@ -384,8 +387,19 @@ export default class SimpleMindMapPlugin extends Plugin {
 		});
 	}
 
-	async createNewMindMap(folder?: TFolder | null): Promise<void> {
-		const targetFolderPath = this.resolveNewMindMapFolder(folder);
+	async createNewMindMap(
+		folder?: TFolder | null,
+		overrides?: {
+			title?: string;
+			folderPath?: string;
+			direction?: MindMapDirection;
+			stylePreset?: MindMapStylePreset;
+		}
+	): Promise<void> {
+		const targetFolderPath =
+			overrides?.folderPath !== undefined
+				? overrides.folderPath.trim()
+				: this.resolveNewMindMapFolder(folder);
 		if (targetFolderPath) {
 			const normalized = normalizePath(targetFolderPath);
 			if (!this.app.vault.getAbstractFileByPath(normalized)) {
@@ -393,16 +407,38 @@ export default class SimpleMindMapPlugin extends Plugin {
 			}
 		}
 
-		const { filePath, title } = this.generateUniqueMindMapPath(targetFolderPath);
+		const { filePath, title } = this.generateUniqueMindMapPath(
+			targetFolderPath,
+			overrides?.title
+		);
 		const initialContent = createDefaultMindMapMarkdown(
 			title,
-			this.settings.defaultDirection,
-			this.settings.markdownStyle
+			overrides?.direction ?? this.settings.defaultDirection,
+			this.settings.markdownStyle,
+			overrides?.stylePreset ?? this.settings.defaultStylePreset
 		);
 
 		const createdFile = await this.app.vault.create(filePath, initialContent);
 		const leaf = this.app.workspace.getLeaf(false);
 		await this.session.openMindMap(leaf, createdFile.path, { focus: true });
+	}
+
+	public openNewMindMapModal(folder?: TFolder | null): void {
+		const defaultFolder = this.resolveNewMindMapFolder(folder);
+		new NewMindMapModal(this.app, {
+			defaultTitle: "新建脑图",
+			defaultFolder,
+			defaultDirection: this.settings.defaultDirection,
+			defaultStylePreset: this.settings.defaultStylePreset,
+			onConfirm: async (result) => {
+				await this.createNewMindMap(null, {
+					title: result.title,
+					folderPath: result.folder,
+					direction: result.direction,
+					stylePreset: result.stylePreset,
+				});
+			},
+		}).open();
 	}
 
 	private resolveNewMindMapFolder(explicitFolder?: TFolder | null): string {
@@ -419,13 +455,16 @@ export default class SimpleMindMapPlugin extends Plugin {
 		return "";
 	}
 
-	private generateUniqueMindMapPath(folderPath: string): {
+	private generateUniqueMindMapPath(
+		folderPath: string,
+		baseName = "新建脑图"
+	): {
 		filePath: string;
 		title: string;
 	} {
 		const allocated = allocateUniqueVaultPath({
 			folder: folderPath,
-			baseName: "新建脑图",
+			baseName: baseName.trim() || "新建脑图",
 			extension: "md",
 			separator: " ",
 			exists: (candidate) =>
@@ -458,14 +497,14 @@ export default class SimpleMindMapPlugin extends Plugin {
 
 	private registerCommandsAndMenus(): void {
 		this.addRibbonIcon(MINDMAP_ICON_ID, "新建脑图", () => {
-			void this.createNewMindMap();
+			this.openNewMindMapModal();
 		});
 
 		this.addCommand({
 			id: "create-new-mind-map",
 			name: "新建脑图 (Create new mind map)",
 			callback: () => {
-				void this.createNewMindMap();
+				this.openNewMindMapModal();
 			},
 		});
 
@@ -637,6 +676,19 @@ export default class SimpleMindMapPlugin extends Plugin {
 			},
 		});
 
+		this.addCommand({
+			id: "search-mind-map-nodes",
+			name: "在当前脑图中搜索节点 (Find nodes in Mind Map)",
+			checkCallback: (checking) => {
+				const view = this.app.workspace.getActiveViewOfType(MindMapView);
+				if (!view) return false;
+				if (!checking) {
+					view.openNodeSearch();
+				}
+				return true;
+			},
+		});
+
 		this.registerEvent(
 			this.app.workspace.on("file-menu", (menu, file) => {
 				if (file instanceof TFolder) {
@@ -645,7 +697,7 @@ export default class SimpleMindMapPlugin extends Plugin {
 							.setTitle("新建脑图")
 							.setIcon(MINDMAP_ICON_ID)
 							.onClick(() => {
-								void this.createNewMindMap(file);
+								this.openNewMindMapModal(file);
 							});
 					});
 				} else if (file instanceof TFile && file.extension === "md") {

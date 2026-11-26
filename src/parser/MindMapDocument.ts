@@ -4,6 +4,7 @@ import {
 	directionToCode,
 	type MarkdownSerializeStyle,
 	type MindMapDirection,
+	type MindMapStylePreset,
 } from "../settings/types";
 import {
 	markdownToMindMap,
@@ -14,6 +15,7 @@ import {
 export interface ReconcileOptions {
 	fallbackTitle: string;
 	defaultDirection: MindMapDirection;
+	defaultStylePreset?: MindMapStylePreset;
 	clear: boolean;
 	hasCanvas: boolean;
 }
@@ -24,27 +26,42 @@ export type ReconcileDecision =
 			action: "mount" | "refresh";
 			data: MindElixirData;
 			direction: MindMapDirection;
+			stylePreset: MindMapStylePreset;
 	  };
 
 /**
  * Pure in-process Mind Map Note document model:
  * - Reconciles incoming external Markdown (noop / mount / refresh)
- * - Tracks frontmatter preservation and layout direction precedence
+ * - Tracks frontmatter preservation, layout direction, and style preset precedence
  * - Separates pure serialization reads from confirmed disk saves
  */
 export class MindMapDocument {
 	private existingFrontmatterRaw: string | null = null;
 	private preservedBlocks: PreservedMarkdownBlock[] = [];
 	private currentDirection: MindMapDirection;
+	private currentStylePreset: MindMapStylePreset;
+	private hasExplicitStylePreset = false;
 	private lastSavedMarkdown = "";
 	private hasLocalEdits = false;
 
-	constructor(defaultDirection: MindMapDirection) {
+	constructor(
+		defaultDirection: MindMapDirection,
+		defaultStylePreset: MindMapStylePreset = "classic"
+	) {
 		this.currentDirection = defaultDirection;
+		this.currentStylePreset = defaultStylePreset;
 	}
 
 	public get direction(): MindMapDirection {
 		return this.currentDirection;
+	}
+
+	public get stylePreset(): MindMapStylePreset {
+		return this.currentStylePreset;
+	}
+
+	public hasExplicitStyleInNote(): boolean {
+		return this.hasExplicitStylePreset;
 	}
 
 	public get lastSyncedMarkdown(): string {
@@ -57,6 +74,13 @@ export class MindMapDocument {
 
 	public setDirection(direction: MindMapDirection): void {
 		this.currentDirection = direction;
+	}
+
+	public setStylePreset(preset: MindMapStylePreset, explicit = true): void {
+		this.currentStylePreset = preset;
+		if (explicit) {
+			this.hasExplicitStylePreset = true;
+		}
 	}
 
 	public markLocalEdit(): void {
@@ -76,10 +100,15 @@ export class MindMapDocument {
 		this.hasLocalEdits = false;
 	}
 
-	public clear(defaultDirection: MindMapDirection): void {
+	public clear(
+		defaultDirection: MindMapDirection,
+		defaultStylePreset: MindMapStylePreset = "classic"
+	): void {
 		this.existingFrontmatterRaw = null;
 		this.preservedBlocks = [];
 		this.currentDirection = defaultDirection;
+		this.currentStylePreset = defaultStylePreset;
+		this.hasExplicitStylePreset = false;
 		this.lastSavedMarkdown = "";
 		this.hasLocalEdits = false;
 	}
@@ -104,6 +133,9 @@ export class MindMapDocument {
 			existingFrontmatterRaw: this.existingFrontmatterRaw,
 			style,
 			direction: this.currentDirection,
+			stylePreset: this.hasExplicitStylePreset
+				? this.currentStylePreset
+				: undefined,
 			preservedBlocks: this.preservedBlocks,
 		});
 	}
@@ -123,6 +155,9 @@ export class MindMapDocument {
 		this.currentDirection = parsed.frontmatter.properties[MINDMAP_DIRECTION_KEY]
 			? parsed.direction
 			: options.defaultDirection;
+		this.hasExplicitStylePreset = parsed.stylePreset !== undefined;
+		this.currentStylePreset =
+			parsed.stylePreset ?? options.defaultStylePreset ?? "classic";
 		parsed.data.direction = directionToCode(this.currentDirection);
 
 		this.lastSavedMarkdown = markdown;
@@ -132,6 +167,7 @@ export class MindMapDocument {
 			action: options.clear || !options.hasCanvas ? "mount" : "refresh",
 			data: parsed.data,
 			direction: this.currentDirection,
+			stylePreset: this.currentStylePreset,
 		};
 	}
 }

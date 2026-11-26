@@ -8,6 +8,8 @@ export type SplitLayout = "left-right" | "top-bottom";
 
 export type ContextMenuLanguage = "zh-CN" | "zh-TW" | "en" | "ja" | "ko";
 
+export type MindMapStylePreset = "classic" | "card" | "bordered";
+
 export interface MindMapHotkeys {
 	addChild: string;
 	addSibling: string;
@@ -20,6 +22,7 @@ export interface MindMapHotkeys {
 export interface MindMapSettings {
 	autoOpenMindMap: boolean;
 	defaultDirection: MindMapDirection;
+	defaultStylePreset: MindMapStylePreset;
 	defaultSplitLayout: SplitLayout;
 	markdownStyle: MarkdownSerializeStyle;
 	themeMode: ThemeMode;
@@ -43,6 +46,7 @@ export const DEFAULT_HOTKEYS: MindMapHotkeys = {
 export const DEFAULT_SETTINGS: MindMapSettings = {
 	autoOpenMindMap: true,
 	defaultDirection: "side",
+	defaultStylePreset: "classic",
 	defaultSplitLayout: "left-right",
 	markdownStyle: "heading-list",
 	themeMode: "auto",
@@ -57,6 +61,7 @@ export const DEFAULT_SETTINGS: MindMapSettings = {
 export const MINDMAP_VIEW_TYPE = "pure-mind-map-view";
 export const MINDMAP_FRONTMATTER_KEY = "mindmap-plugin";
 export const MINDMAP_DIRECTION_KEY = "mindmap-direction";
+export const MINDMAP_STYLE_KEY = "mindmap-style";
 export const MINDMAP_ICON_ID = "pure-mind-map-icon";
 export const MINDMAP_ICON_SVG = `<g fill="none" stroke="currentColor" stroke-width="7.5" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="38" width="28" height="24" rx="6"/><rect x="66" y="12" width="26" height="20" rx="5"/><rect x="66" y="40" width="26" height="20" rx="5"/><rect x="66" y="68" width="26" height="20" rx="5"/><path d="M 36 50 C 51 50 51 22 66 22"/><path d="M 36 50 L 66 50"/><path d="M 36 50 C 51 50 51 78 66 78"/></g>`;
 export const SPLIT_LEFT_RIGHT_ICON_ID = "pure-mind-map-split-left-right";

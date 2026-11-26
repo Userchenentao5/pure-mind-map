@@ -2,14 +2,183 @@ import {
 	DARK_THEME,
 	THEME,
 	type KeypressOptions,
+	type MainLineParams,
 	type Options,
+	type SubLineParams,
 	type Theme,
 } from "mind-elixir";
 import type {
 	ContextMenuLanguage,
 	MindMapHotkeys,
+	MindMapStylePreset,
 	ThemeMode,
 } from "../settings/types";
+
+export const STYLE_PRESET_LABELS: Record<MindMapStylePreset, string> = {
+	classic: "经典导图（1 级边框 + 下划线曲线）",
+	card: "卡片逻辑图（全节点圆角卡片 + 圆角折线）",
+	bordered: "柔和卡片（全节点圆角卡片 + 柔和曲线）",
+};
+
+export function buildHorizontalBracketPath(
+	startX: number,
+	startY: number,
+	endX: number,
+	endY: number,
+	radius = 8,
+	elbowRatio = 0.5
+): string {
+	if (Math.abs(endY - startY) < 2) {
+		const alignedY = Math.round((startY + endY) / 2);
+		return `M ${startX} ${alignedY} H ${endX}`;
+	}
+	const midX = startX + (endX - startX) * elbowRatio;
+	const dirX = endX >= startX ? 1 : -1;
+	const dirY = endY >= startY ? 1 : -1;
+	const r = Math.min(
+		radius,
+		Math.abs(midX - startX),
+		Math.abs(endX - midX),
+		Math.abs(endY - startY) / 2
+	);
+	return `M ${startX} ${startY} H ${midX - dirX * r} Q ${midX} ${startY} ${midX} ${startY + dirY * r} V ${endY - dirY * r} Q ${midX} ${endY} ${midX + dirX * r} ${endY} H ${endX}`;
+}
+
+export function buildVerticalBracketPath(
+	startX: number,
+	startY: number,
+	endX: number,
+	endY: number,
+	radius = 8,
+	elbowRatio = 0.5
+): string {
+	if (Math.abs(endX - startX) < 2) {
+		const alignedX = Math.round((startX + endX) / 2);
+		return `M ${alignedX} ${startY} V ${endY}`;
+	}
+	const midY = startY + (endY - startY) * elbowRatio;
+	const dirX = endX >= startX ? 1 : -1;
+	const dirY = endY >= startY ? 1 : -1;
+	const r = Math.min(
+		radius,
+		Math.abs(midY - startY),
+		Math.abs(endY - midY),
+		Math.abs(endX - startX) / 2
+	);
+	return `M ${startX} ${startY} V ${midY - dirY * r} Q ${startX} ${midY} ${startX + dirX * r} ${midY} H ${endX - dirX * r} Q ${endX} ${midY} ${endX} ${midY + dirY * r} V ${endY}`;
+}
+
+export function buildCenterBezierPath(
+	startX: number,
+	startY: number,
+	endX: number,
+	endY: number,
+	vertical = false
+): string {
+	if (vertical) {
+		const midY = (startY + endY) / 2;
+		return `M ${startX} ${startY} C ${startX} ${midY} ${endX} ${midY} ${endX} ${endY}`;
+	}
+	const midX = (startX + endX) / 2;
+	return `M ${startX} ${startY} C ${midX} ${startY} ${midX} ${endY} ${endX} ${endY}`;
+}
+
+function generateCardMainBranch({
+	pT,
+	pL,
+	pW,
+	pH,
+	cT,
+	cL,
+	cW,
+	cH,
+	direction,
+}: MainLineParams): string {
+	if (direction === "down") {
+		return buildVerticalBracketPath(pL + pW / 2, pT + pH, cL + cW / 2, cT);
+	}
+	const startY = pT + pH / 2;
+	const endY = cT + cH / 2;
+	if (direction === "lhs") {
+		return buildHorizontalBracketPath(pL, startY, cL + cW, endY);
+	}
+	return buildHorizontalBracketPath(pL + pW, startY, cL, endY);
+}
+
+function generateBorderedMainBranch({
+	pT,
+	pL,
+	pW,
+	pH,
+	cT,
+	cL,
+	cW,
+	cH,
+	direction,
+}: MainLineParams): string {
+	if (direction === "down") {
+		return buildCenterBezierPath(pL + pW / 2, pT + pH, cL + cW / 2, cT, true);
+	}
+	const startY = pT + pH / 2;
+	const endY = cT + cH / 2;
+	if (direction === "lhs") {
+		return buildCenterBezierPath(pL, startY, cL + cW, endY, false);
+	}
+	return buildCenterBezierPath(pL + pW, startY, cL, endY, false);
+}
+
+function readNodeGapX(container: HTMLElement | undefined): number {
+	const raw = container?.style.getPropertyValue("--node-gap-x");
+	const parsed = raw ? parseInt(raw, 10) : NaN;
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : 30;
+}
+
+function generateCardSubBranch(
+	this: { container?: HTMLElement },
+	{ pT, pL, pW, pH, cT, cL, cW, cH, direction, isFirst }: SubLineParams
+): string {
+	if (direction === "down") {
+		return buildVerticalBracketPath(
+			pL + pW / 2,
+			pT + pH,
+			cL + cW / 2,
+			cT,
+			8,
+			0.65
+		);
+	}
+	const gap = readNodeGapX(this?.container);
+	const startY = pT + pH / 2;
+	const endY = cT + cH / 2;
+	if (direction === "lhs") {
+		const startX = isFirst ? pL : pL + gap;
+		const endX = cL + cW - gap;
+		return buildHorizontalBracketPath(startX, startY, endX, endY, 8, 0.65);
+	}
+	const startX = isFirst ? pL + pW : pL + pW - gap;
+	const endX = cL + gap;
+	return buildHorizontalBracketPath(startX, startY, endX, endY, 8, 0.65);
+}
+
+function generateBorderedSubBranch(
+	this: { container?: HTMLElement },
+	{ pT, pL, pW, pH, cT, cL, cW, cH, direction, isFirst }: SubLineParams
+): string {
+	if (direction === "down") {
+		return buildCenterBezierPath(pL + pW / 2, pT + pH, cL + cW / 2, cT, true);
+	}
+	const gap = readNodeGapX(this?.container);
+	const startY = pT + pH / 2;
+	const endY = cT + cH / 2;
+	if (direction === "lhs") {
+		const startX = isFirst ? pL : pL + gap;
+		const endX = cL + cW - gap;
+		return buildCenterBezierPath(startX, startY, endX, endY, false);
+	}
+	const startX = isFirst ? pL + pW : pL + pW - gap;
+	const endX = cL + gap;
+	return buildCenterBezierPath(startX, startY, endX, endY, false);
+}
 
 export type CanvasContextMenuOption = Exclude<
 	NonNullable<Options["contextMenu"]>,
@@ -191,7 +360,8 @@ export function resolveEffectiveDarkMode(
 export function buildCanvasTheme(
 	mode: ThemeMode,
 	systemIsDark: boolean,
-	readCssVar: (varName: string) => string
+	readCssVar: (varName: string) => string,
+	stylePreset: MindMapStylePreset = "classic"
 ): Theme {
 	const isDark = resolveEffectiveDarkMode(mode, systemIsDark);
 	const base = isDark ? DARK_THEME : THEME;
@@ -204,8 +374,24 @@ export function buildCanvasTheme(
 	const accent = token("--interactive-accent", isDark ? "#7c6af7" : "#4c6ef5");
 	const border = token("--background-modifier-border", isDark ? "#3a3a3a" : "#e0e0e0");
 
+	const branchGenerators: Partial<
+		Pick<Theme, "generateMainBranch" | "generateSubBranch">
+	> =
+		stylePreset === "card"
+			? {
+					generateMainBranch: generateCardMainBranch,
+					generateSubBranch: generateCardSubBranch,
+				}
+			: stylePreset === "bordered"
+				? {
+						generateMainBranch: generateBorderedMainBranch,
+						generateSubBranch: generateBorderedSubBranch,
+					}
+				: {};
+
 	return {
 		...base,
+		...branchGenerators,
 		name: isDark ? "ObsidianDark" : "ObsidianLight",
 		type: isDark ? "dark" : "light",
 		cssVar: {
