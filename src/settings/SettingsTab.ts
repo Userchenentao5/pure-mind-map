@@ -13,6 +13,7 @@ import type SimpleMindMapPlugin from "../main";
 import {
 	DEFAULT_HOTKEYS,
 	DEFAULT_SETTINGS,
+	type ContextMenuLanguage,
 	type MarkdownSerializeStyle,
 	type MindMapDirection,
 	type MindMapHotkeys,
@@ -41,6 +42,14 @@ const THEME_MODE_OPTIONS: Record<ThemeMode, string> = {
 	auto: "跟随 Obsidian 主题",
 	light: "始终浅色",
 	dark: "始终深色",
+};
+
+const CONTEXT_MENU_LANGUAGE_OPTIONS: Record<ContextMenuLanguage, string> = {
+	"zh-CN": "简体中文",
+	"zh-TW": "繁體中文",
+	en: "English",
+	ja: "日本語",
+	ko: "한국어",
 };
 
 const EXPORT_SCALE_OPTIONS: Record<string, string> = {
@@ -155,6 +164,16 @@ export class MindMapSettingTab extends PluginSettingTab {
 						},
 					},
 					{
+						name: "节点右键菜单语言",
+						desc: "控制画布中右键点击节点时弹出操作菜单的显示语言（默认简体中文）",
+						control: {
+							type: "dropdown",
+							key: "contextMenuLanguage",
+							options: CONTEXT_MENU_LANGUAGE_OPTIONS,
+							defaultValue: DEFAULT_SETTINGS.contextMenuLanguage,
+						},
+					},
+					{
 						name: "紧凑模式",
 						desc: "缩小节点间距，适合节点数量较多的大型脑图",
 						control: {
@@ -254,6 +273,8 @@ export class MindMapSettingTab extends PluginSettingTab {
 				return this.plugin.settings.markdownStyle;
 			case "themeMode":
 				return this.plugin.settings.themeMode;
+			case "contextMenuLanguage":
+				return this.plugin.settings.contextMenuLanguage;
 			case "compactMode":
 				return this.plugin.settings.compactMode;
 			case "defaultNewFolder":
@@ -301,6 +322,11 @@ export class MindMapSettingTab extends PluginSettingTab {
 				return;
 			case "themeMode":
 				this.plugin.settings.themeMode = value as ThemeMode;
+				await this.plugin.saveSettings();
+				this.plugin.refreshOpenMindMaps();
+				return;
+			case "contextMenuLanguage":
+				this.plugin.settings.contextMenuLanguage = value as ContextMenuLanguage;
 				await this.plugin.saveSettings();
 				this.plugin.refreshOpenMindMaps();
 				return;
@@ -408,6 +434,18 @@ export class MindMapSettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.themeMode)
 					.onChange(async (value) => {
 						await this.setControlValue("themeMode", value);
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("节点右键菜单语言")
+			.setDesc("控制画布中右键点击节点时弹出操作菜单的显示语言（默认简体中文）")
+			.addDropdown((dropdown) =>
+				dropdown
+					.addOptions(CONTEXT_MENU_LANGUAGE_OPTIONS)
+					.setValue(this.plugin.settings.contextMenuLanguage)
+					.onChange(async (value) => {
+						await this.setControlValue("contextMenuLanguage", value);
 					})
 			);
 

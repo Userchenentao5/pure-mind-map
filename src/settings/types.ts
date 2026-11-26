@@ -6,6 +6,8 @@ export type ThemeMode = "auto" | "light" | "dark";
 
 export type SplitLayout = "left-right" | "top-bottom";
 
+export type ContextMenuLanguage = "zh-CN" | "zh-TW" | "en" | "ja" | "ko";
+
 export interface MindMapHotkeys {
 	addChild: string;
 	addSibling: string;
@@ -21,6 +23,7 @@ export interface MindMapSettings {
 	defaultSplitLayout: SplitLayout;
 	markdownStyle: MarkdownSerializeStyle;
 	themeMode: ThemeMode;
+	contextMenuLanguage: ContextMenuLanguage;
 	compactMode: boolean;
 	defaultNewFolder: string;
 	exportFolder: string;
@@ -43,6 +46,7 @@ export const DEFAULT_SETTINGS: MindMapSettings = {
 	defaultSplitLayout: "left-right",
 	markdownStyle: "heading-list",
 	themeMode: "auto",
+	contextMenuLanguage: "zh-CN",
 	compactMode: false,
 	defaultNewFolder: "",
 	exportFolder: "",

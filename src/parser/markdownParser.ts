@@ -994,6 +994,8 @@ export function renderNodeMarkdown(
 	text = escapeHtml(text);
 
 	// 6. Inline text styles
+	text = text.replace(/\*\*\*(.+?)\*\*\*/g, "<strong><em>$1</em></strong>");
+	text = text.replace(/(^|[^*])\*([^*]+?)\*(?=\*\*[^*]+?\*\*)/g, "$1<em>$2</em>");
 	text = text.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
 	text = text.replace(/__(.+?)__/g, "<strong>$1</strong>");
 	text = text.replace(/~~(.+?)~~/g, "<del>$1</del>");

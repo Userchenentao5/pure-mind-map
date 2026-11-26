@@ -8,6 +8,7 @@ import {
 } from "obsidian";
 import MindElixir, {
 	type MindElixirData,
+	type Topic,
 } from "mind-elixir";
 import type SimpleMindMapPlugin from "../main";
 import { MindMapDocument } from "../parser/MindMapDocument";
@@ -28,6 +29,7 @@ import type { ExportFormat } from "../export/MindMapExportPipeline";
 import {
 	buildCanvasKeypressOptions,
 	buildCanvasTheme,
+	buildContextMenuOption,
 	createCanvasRelinkScheduler,
 	isImageEventTarget,
 	type CanvasRelinkScheduler,
@@ -56,6 +58,9 @@ export class MindMapView extends TextFileView {
 		this.inlineEditor = new NodeInlineEditor(this.app, {
 			getMind: () => this.mind,
 			getSourcePath: () => this.file?.path ?? "",
+			resolveVaultImage: (target) => this.resolveVaultImageUrl(target),
+			savePastedImage: (blob) => this.createVaultImageFromBlob(blob),
+			onRelinkNeeded: () => this.relinkScheduler.schedule(),
 		});
 		this.exporter = new MindMapExporter(this.app);
 		this.relinkScheduler = createCanvasRelinkScheduler({
@@ -308,12 +313,19 @@ export class MindMapView extends TextFileView {
 		this.applyCurrentTheme();
 		this.mind.changeCompact(this.plugin.settings.compactMode);
 
-		// Only remount canvas when hotkey bindings actually changed, preserving undo stack & viewport
-		const nextHotkeysKey = JSON.stringify(this.plugin.settings.hotkeys);
-		if (nextHotkeysKey !== this.mountedHotkeysKey) {
+		// Remount canvas when hotkeys or context menu language changed, preserving viewport/undo otherwise
+		const nextOptionsKey = this.getMountedCanvasOptionsKey();
+		if (nextOptionsKey !== this.mountedHotkeysKey) {
 			const currentData = this.mind.getData();
 			void this.mountMindMap(currentData);
 		}
+	}
+
+	private getMountedCanvasOptionsKey(): string {
+		return JSON.stringify({
+			hotkeys: this.plugin.settings.hotkeys,
+			contextMenuLanguage: this.plugin.settings.contextMenuLanguage,
+		});
 	}
 
 	public commitActiveEdit(): void {
@@ -390,9 +402,12 @@ export class MindMapView extends TextFileView {
 
 		const mind = new MindElixir({
 			el: mountEl,
+			selectionContainer: this.contentEl.ownerDocument.body,
 			direction: directionToCode(this.document.direction),
 			editable: true,
-			contextMenu: true,
+			contextMenu: buildContextMenuOption(
+				this.plugin.settings.contextMenuLanguage
+			),
 			toolBar: false,
 			allowUndo: true,
 			compact: this.plugin.settings.compactMode,
@@ -410,7 +425,14 @@ export class MindMapView extends TextFileView {
 			},
 		});
 
-		this.mountedHotkeysKey = JSON.stringify(this.plugin.settings.hotkeys);
+		this.mountedHotkeysKey = this.getMountedCanvasOptionsKey();
+		const originalEditTopic: (el?: Topic) => void = mind.editTopic;
+		const rawEditTopic = (el: Topic): void => {
+			originalEditTopic.call(mind, el);
+		};
+		mind.editTopic = (el: Topic) => {
+			this.inlineEditor.openRichEditor(mind, el, rawEditTopic);
+		};
 		this.mind = mind;
 		await mind.init(data);
 		this.observeNodesLayout(mind);
@@ -541,6 +563,17 @@ export class MindMapView extends TextFileView {
 		});
 	}
 
+	private async createVaultImageFromBlob(blob: Blob): Promise<TFile> {
+		const ext = blob.type.split("/")[1]?.replace("jpeg", "jpg") || "png";
+		const fileName = `mindmap-img-${Date.now()}.${ext}`;
+		const targetPath = await this.app.fileManager.getAvailablePathForAttachment(
+			fileName,
+			this.file?.path ?? ""
+		);
+		const arrayBuffer = await blob.arrayBuffer();
+		return this.app.vault.createBinary(targetPath, arrayBuffer);
+	}
+
 	private async handlePasteEvent(evt: ClipboardEvent): Promise<void> {
 		if (!this.mind || !this.mind.currentNode || !evt.clipboardData) return;
 
@@ -552,14 +585,7 @@ export class MindMapView extends TextFileView {
 		const blob = imageItem.getAsFile();
 		if (!blob) return;
 
-		const ext = blob.type.split("/")[1]?.replace("jpeg", "jpg") || "png";
-		const fileName = `mindmap-img-${Date.now()}.${ext}`;
-		const targetPath = await this.app.fileManager.getAvailablePathForAttachment(
-			fileName,
-			this.file?.path ?? ""
-		);
-		const arrayBuffer = await blob.arrayBuffer();
-		const createdFile = await this.app.vault.createBinary(targetPath, arrayBuffer);
+		const createdFile = await this.createVaultImageFromBlob(blob);
 		await this.inlineEditor.appendImageEmbedToSelectedNode(createdFile);
 		new Notice(`已粘贴图片到节点：${createdFile.name}`);
 	}

@@ -3,6 +3,7 @@ import { DEFAULT_HOTKEYS } from "../settings/types";
 import {
 	buildCanvasKeypressOptions,
 	buildCanvasTheme,
+	buildContextMenuOption,
 	createCanvasRelinkScheduler,
 	formatHotkeyForDisplay,
 	isImageEventTarget,
@@ -179,5 +180,21 @@ describe("canvasConfig", () => {
 		expect(frames.size).toBe(1);
 		scheduler.cancel();
 		expect(frames.size).toBe(0);
+	});
+
+	it("builds localized node context menu options defaulting to Simplified Chinese", () => {
+		const zhDefault = buildContextMenuOption(undefined);
+		expect(zhDefault.focus).toBe(true);
+		expect(zhDefault.link).toBe(true);
+		expect(zhDefault.locale?.addChild).toBe("添加子节点");
+		expect(zhDefault.locale?.removeNode).toBe("删除节点");
+		expect(zhDefault.locale?.summary).toBe("添加概要");
+
+		const enMenu = buildContextMenuOption("en");
+		expect(enMenu.locale?.addChild).toBe("Add child");
+		expect(enMenu.locale?.linkBidirectional).toBe("Bidirectional Link");
+
+		const jaMenu = buildContextMenuOption("ja");
+		expect(jaMenu.locale?.addChild).toBe("子ノードを追加");
 	});
 });

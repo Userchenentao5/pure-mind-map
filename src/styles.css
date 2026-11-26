@@ -112,6 +112,7 @@
 
 .mm-mind-elixir-root .map-container .me-tpc.mm-editing-node {
 	visibility: hidden;
+	outline: none;
 }
 
 .mm-mind-elixir-root .map-container #input-box {
@@ -127,6 +128,286 @@
 	white-space: pre-wrap;
 	word-break: break-word;
 	line-height: 1.45;
+}
+
+/* Phase 1 Pure Rich Node Inline Editor */
+.mm-mind-elixir-root .map-container #input-box.mm-rich-editor {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	outline: 2px solid var(--interactive-accent, #7c6af7);
+	outline-offset: 1px;
+	box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
+	cursor: text;
+}
+
+.mm-rich-editor-text {
+	outline: none;
+	min-height: 1.45em;
+	white-space: pre-wrap;
+	word-break: break-word;
+	user-select: text;
+	-webkit-user-select: text;
+}
+
+.mm-rich-editor-text:empty::before {
+	content: attr(data-placeholder);
+	color: var(--text-faint, #888888);
+	pointer-events: none;
+}
+
+.mm-rich-editor.is-root .mm-rich-editor-text:empty::before {
+	color: rgba(255, 255, 255, 0.65);
+}
+
+.mm-edit-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
+	padding: 0 6px;
+	margin: 0 2px;
+	border-radius: 6px;
+	font-size: 0.92em;
+	line-height: 1.35;
+	vertical-align: baseline;
+	user-select: none;
+	-webkit-user-select: none;
+}
+
+.mm-edit-chip-wikilink {
+	background: color-mix(in srgb, var(--link-color, #7c6af7) 14%, transparent);
+	color: var(--link-color, #7c6af7);
+	border: 1px solid color-mix(in srgb, var(--link-color, #7c6af7) 32%, transparent);
+}
+
+.mm-edit-chip-extlink {
+	background: color-mix(in srgb, var(--link-external-color, #4c6ef5) 14%, transparent);
+	color: var(--link-external-color, #4c6ef5);
+	border: 1px solid color-mix(in srgb, var(--link-external-color, #4c6ef5) 32%, transparent);
+}
+
+.mm-edit-chip-tag {
+	border-radius: 999px;
+	background: var(--tag-background, rgba(124, 106, 247, 0.16));
+	color: var(--tag-color, var(--interactive-accent, #7c6af7));
+}
+
+.mm-rich-editor.is-root .mm-edit-chip {
+	background: rgba(255, 255, 255, 0.2);
+	color: #ffffff;
+	border-color: rgba(255, 255, 255, 0.45);
+}
+
+.mm-edit-chip-remove {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 14px;
+	height: 14px;
+	padding: 0;
+	margin-left: 1px;
+	border: none;
+	border-radius: 999px;
+	background: transparent;
+	color: currentColor;
+	opacity: 0.55;
+	font-size: 12px;
+	line-height: 1;
+	cursor: pointer;
+	box-shadow: none;
+}
+
+.mm-edit-chip:hover .mm-edit-chip-remove,
+.mm-edit-chip-remove:hover {
+	opacity: 1;
+	background: rgba(0, 0, 0, 0.12);
+}
+
+.mm-edit-image-chip {
+	position: relative;
+	display: inline-flex;
+	flex-direction: column;
+	vertical-align: bottom;
+	max-width: 100%;
+	margin: 4px 2px 2px 0;
+	border-radius: 6px;
+	overflow: hidden;
+	border: 1px solid var(--background-modifier-border);
+	background: var(--background-primary);
+	user-select: none;
+	-webkit-user-select: none;
+	cursor: default;
+}
+
+.mm-rich-media-img {
+	display: block;
+	max-width: 240px;
+	max-height: 180px;
+	object-fit: contain;
+}
+
+.mm-rich-media-img.is-size-120 {
+	width: 120px;
+	height: auto;
+	max-width: 120px;
+}
+
+.mm-rich-media-img.is-size-200 {
+	width: 200px;
+	height: auto;
+	max-width: 200px;
+}
+
+.mm-rich-media-img.is-size-320 {
+	width: 320px;
+	height: auto;
+	max-width: 320px;
+}
+
+.mm-rich-media-broken {
+	padding: 6px 10px;
+	font-size: 0.85em;
+	color: var(--text-muted);
+}
+
+.mm-rich-media-actions {
+	position: absolute;
+	top: 4px;
+	right: 4px;
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	padding: 2px 3px;
+	border-radius: 6px;
+	background: rgba(20, 20, 24, 0.72);
+	backdrop-filter: blur(4px);
+	opacity: 0;
+	transition: opacity 0.14s ease;
+}
+
+.mm-edit-image-chip:hover .mm-rich-media-actions {
+	opacity: 1;
+}
+
+.mm-view-container .mm-rich-media-btn,
+.mm-rich-media-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	height: 20px;
+	min-width: 20px;
+	padding: 0 5px;
+	border: none;
+	border-radius: 4px;
+	background: transparent;
+	color: rgba(255, 255, 255, 0.88);
+	font-size: 11px;
+	line-height: 1;
+	cursor: pointer;
+	box-shadow: none;
+}
+
+.mm-rich-media-btn:hover {
+	background: rgba(255, 255, 255, 0.2);
+	color: #ffffff;
+}
+
+.mm-rich-media-btn.is-active {
+	background: var(--interactive-accent, #7c6af7);
+	color: #ffffff;
+}
+
+.mm-rich-media-delete:hover {
+	background: rgba(229, 72, 77, 0.85);
+}
+
+.mm-rich-media-delete svg {
+	width: 12px;
+	height: 12px;
+}
+
+/* Phase 2 Floating Selection Format Toolbar */
+.mm-format-toolbar {
+	position: fixed;
+	left: var(--mm-format-left, 0);
+	top: var(--mm-format-top, 0);
+	z-index: 1001;
+	padding: 4px 6px;
+	border-radius: 9px;
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	box-shadow: var(--shadow-s, 0 6px 20px rgba(0, 0, 0, 0.18));
+	font-family: var(--font-interface);
+}
+
+.mm-format-toolbar-row,
+.mm-format-url-row {
+	display: flex;
+	align-items: center;
+	gap: 3px;
+}
+
+.mm-format-toolbar .mm-format-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 26px;
+	height: 26px;
+	padding: 0;
+	border: none;
+	border-radius: 6px;
+	background: transparent;
+	color: var(--text-muted);
+	cursor: pointer;
+	box-shadow: none;
+	transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.mm-format-toolbar .mm-format-btn:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.mm-format-toolbar .mm-format-btn.is-active {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent, #ffffff);
+}
+
+.mm-format-toolbar .mm-format-btn svg {
+	width: 15px;
+	height: 15px;
+}
+
+.mm-format-divider {
+	width: 1px;
+	height: 16px;
+	margin: 0 2px;
+	background: var(--background-modifier-border);
+}
+
+.mm-format-url-input {
+	width: 220px;
+	height: 26px;
+	padding: 2px 8px;
+	font-size: 12px;
+	border-radius: 6px;
+	border: 1px solid var(--background-modifier-border);
+	background: var(--background-secondary);
+	color: var(--text-normal);
+	outline: none;
+}
+
+.mm-format-url-input:focus {
+	border-color: var(--interactive-accent);
+}
+
+.mm-format-toolbar .mm-format-url-confirm {
+	color: var(--interactive-accent);
+}
+
+/* Keep MindElixir marquee selection overlay cleanly visible above Obsidian panes */
+body > div:has(> .selection-area) {
+	z-index: 100 !important;
 }
 
 .mm-mind-elixir-root .map-container .me-tpc .text {
