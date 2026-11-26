@@ -28,6 +28,9 @@ import type { ExportFormat } from "../export/MindMapExportPipeline";
 import {
 	buildCanvasKeypressOptions,
 	buildCanvasTheme,
+	createCanvasRelinkScheduler,
+	isImageEventTarget,
+	type CanvasRelinkScheduler,
 } from "../canvas/canvasConfig";
 
 export class MindMapView extends TextFileView {
@@ -43,6 +46,8 @@ export class MindMapView extends TextFileView {
 	private switchToSourceHeaderActionEl: HTMLElement | null = null;
 	private inlineEditor: NodeInlineEditor;
 	private exporter: MindMapExporter;
+	private relinkScheduler: CanvasRelinkScheduler;
+	private nodesResizeObserver: ResizeObserver | null = null;
 
 	constructor(leaf: WorkspaceLeaf, plugin: SimpleMindMapPlugin) {
 		super(leaf);
@@ -53,6 +58,14 @@ export class MindMapView extends TextFileView {
 			getSourcePath: () => this.file?.path ?? "",
 		});
 		this.exporter = new MindMapExporter(this.app);
+		this.relinkScheduler = createCanvasRelinkScheduler({
+			isReady: () => this.isCanvasLayoutReady(),
+			linkDiv: () => {
+				this.mind?.linkDiv();
+			},
+			requestFrame: (cb) => window.requestAnimationFrame(cb),
+			cancelFrame: (id) => window.cancelAnimationFrame(id),
+		});
 	}
 
 	getViewType(): string {
@@ -116,6 +129,18 @@ export class MindMapView extends TextFileView {
 		);
 		this.registerDomEvent(this.mapHostEl, "click", (evt) => this.handleCanvasClick(evt), true);
 		this.registerDomEvent(this.mapHostEl, "mouseover", (evt) => this.handleCanvasHover(evt));
+		this.registerDomEvent(
+			this.mapHostEl,
+			"load",
+			(evt) => this.handleCanvasMediaEvent(evt),
+			true
+		);
+		this.registerDomEvent(
+			this.mapHostEl,
+			"error",
+			(evt) => this.handleCanvasMediaEvent(evt),
+			true
+		);
 		this.inlineEditor.attach(this.mapHostEl);
 
 		this.registerEvent(
@@ -304,6 +329,11 @@ export class MindMapView extends TextFileView {
 	}
 
 	private destroyMindMap(): void {
+		this.relinkScheduler.cancel();
+		if (this.nodesResizeObserver) {
+			this.nodesResizeObserver.disconnect();
+			this.nodesResizeObserver = null;
+		}
 		this.inlineEditor.destroy();
 		if (this.mind) {
 			try {
@@ -316,6 +346,39 @@ export class MindMapView extends TextFileView {
 		if (this.mapHostEl) {
 			this.mapHostEl.empty();
 		}
+	}
+
+	private isCanvasLayoutReady(): boolean {
+		const mind = this.mind;
+		if (!mind || !mind.map?.isConnected) return false;
+		const rootEl = mind.map.querySelector<HTMLElement>(".me-root");
+		return Boolean(rootEl && (rootEl.offsetWidth > 0 || rootEl.offsetHeight > 0));
+	}
+
+	private handleCanvasMediaEvent(evt: Event): void {
+		if (!isImageEventTarget(evt.target)) return;
+		this.relinkScheduler.schedule();
+	}
+
+	private observeNodesLayout(mind: MindElixir): void {
+		if (typeof ResizeObserver === "undefined" || !mind.nodes) return;
+		let lastWidth = mind.nodes.offsetWidth;
+		let lastHeight = mind.nodes.offsetHeight;
+		const observer = new ResizeObserver((entries) => {
+			if (this.mind !== mind) return;
+			const entry = entries[entries.length - 1];
+			if (!entry) return;
+			const nextWidth = Math.round(entry.contentRect.width);
+			const nextHeight = Math.round(entry.contentRect.height);
+			if (nextWidth === lastWidth && nextHeight === lastHeight) {
+				return;
+			}
+			lastWidth = nextWidth;
+			lastHeight = nextHeight;
+			this.relinkScheduler.schedule();
+		});
+		observer.observe(mind.nodes);
+		this.nodesResizeObserver = observer;
 	}
 
 	private async mountMindMap(data: MindElixirData): Promise<void> {
@@ -350,11 +413,15 @@ export class MindMapView extends TextFileView {
 		this.mountedHotkeysKey = JSON.stringify(this.plugin.settings.hotkeys);
 		this.mind = mind;
 		await mind.init(data);
+		this.observeNodesLayout(mind);
 		this.updateDirectionButtons();
 
-		// Wait one frame for layout metrics before centering
+		// Wait one frame for layout metrics before linking and centering
 		window.requestAnimationFrame(() => {
 			if (this.mind === mind) {
+				if (this.isCanvasLayoutReady()) {
+					mind.linkDiv();
+				}
 				mind.toCenter();
 			}
 		});

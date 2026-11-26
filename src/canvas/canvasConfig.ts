@@ -6,6 +6,52 @@ import {
 } from "mind-elixir";
 import type { MindMapHotkeys, ThemeMode } from "../settings/types";
 
+export interface CanvasRelinkHost {
+	isReady(): boolean;
+	linkDiv(): void;
+	requestFrame(cb: () => void): number;
+	cancelFrame(id: number): void;
+}
+
+export interface CanvasRelinkScheduler {
+	schedule(): void;
+	cancel(): void;
+}
+
+export function isImageEventTarget(target: EventTarget | null): boolean {
+	if (!target || typeof target !== "object") return false;
+	const tagName = (target as { tagName?: unknown }).tagName;
+	return typeof tagName === "string" && tagName.toUpperCase() === "IMG";
+}
+
+/**
+ * Coalesces asynchronous node layout shifts (such as newly inserted or loaded
+ * embedded images expanding a Node box) into a single animation-frame linkDiv()
+ * pass so branch SVG paths never lag behind or hide under resized Nodes.
+ */
+export function createCanvasRelinkScheduler(
+	host: CanvasRelinkHost
+): CanvasRelinkScheduler {
+	let pendingFrameId: number | null = null;
+
+	return {
+		schedule(): void {
+			if (pendingFrameId !== null) return;
+			pendingFrameId = host.requestFrame(() => {
+				pendingFrameId = null;
+				if (!host.isReady()) return;
+				host.linkDiv();
+			});
+		},
+		cancel(): void {
+			if (pendingFrameId !== null) {
+				host.cancelFrame(pendingFrameId);
+				pendingFrameId = null;
+			}
+		},
+	};
+}
+
 export interface CanvasKeypressTarget {
 	currentNode: { nodeObj: { children?: unknown[] } } | null;
 	currentNodes: unknown[];

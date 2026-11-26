@@ -200,4 +200,159 @@ mindmap-plugin: basic
 			"分支二",
 		]);
 	});
+
+	it("preserves standalone HTML comments, Obsidian comments, and fenced code blocks without turning them into nodes", () => {
+		const md = [
+			"---",
+			"mindmap-plugin: basic",
+			"mindmap-direction: side",
+			"---",
+			"",
+			"<!-- preamble comment -->",
+			"",
+			"# Project",
+			"",
+			"<!--",
+			"# commented heading",
+			"- commented item",
+			"-->",
+			"",
+			"```sh",
+			"# explain the next line",
+			"printf 'hello'",
+			"```",
+			"",
+			"## Branch A",
+			"%% obsidian note %%",
+			"- Item 1",
+			"  ```js",
+			"  const a = 1;",
+			"  ```",
+			"- Item 2",
+			"",
+			"~~~md",
+			"```sh",
+			"# nested fence heading",
+			"```",
+			"~~~",
+			"",
+		].join("\n");
+
+		const parsed = markdownToMindMap(md);
+		expect(parsed.data.nodeData.topic).toBe("Project");
+		expect(parsed.data.nodeData.children?.map((c) => c.topic)).toEqual(["Branch A"]);
+		expect(parsed.data.nodeData.children?.[0].children?.map((c) => c.topic)).toEqual([
+			"Item 1",
+			"Item 2",
+		]);
+
+		parsed.data.nodeData.topic = "Project updated";
+		const out = mindMapToMarkdown(parsed.data, {
+			existingFrontmatterRaw: parsed.frontmatter.raw,
+			style: "heading-list",
+			direction: parsed.direction,
+			preservedBlocks: parsed.preservedBlocks,
+		});
+		expect(out).toBe(md.replace("# Project", "# Project updated"));
+
+		// Round-tripping again stays idempotent
+		const reparsed = markdownToMindMap(out);
+		const out2 = mindMapToMarkdown(reparsed.data, {
+			existingFrontmatterRaw: reparsed.frontmatter.raw,
+			style: "heading-list",
+			direction: reparsed.direction,
+			preservedBlocks: reparsed.preservedBlocks,
+		});
+		expect(out2).toBe(out);
+	});
+
+	it("does not mistake headings inside fenced code blocks for heading mode in pure list notes", () => {
+		const md = [
+			"---",
+			"mindmap-plugin: basic",
+			"mindmap-direction: right",
+			"---",
+			"",
+			"- Root",
+			"",
+			"<!-- list comment -->",
+			"",
+			"```sh",
+			"# not a markdown heading",
+			"echo ok",
+			"```",
+			"",
+			"  - Child 1",
+			"",
+		].join("\n");
+
+		const parsed = markdownToMindMap(md);
+		expect(parsed.data.nodeData.topic).toBe("Root");
+		expect(parsed.data.nodeData.children?.map((c) => c.topic)).toEqual(["Child 1"]);
+
+		parsed.data.nodeData.topic = "Root updated";
+		const out = mindMapToMarkdown(parsed.data, {
+			existingFrontmatterRaw: parsed.frontmatter.raw,
+			style: "list",
+			direction: parsed.direction,
+			preservedBlocks: parsed.preservedBlocks,
+		});
+		expect(out).toBe(md.replace("- Root", "- Root updated"));
+	});
+
+	it("keeps preserved blocks aligned when saved nodeIds and mindmap-extra are present, and retains blocks if anchor node is deleted", () => {
+		const base = markdownToMindMap(
+			[
+				"---",
+				"mindmap-plugin: basic",
+				"mindmap-direction: side",
+				"---",
+				"",
+				"# Root",
+				"",
+				"## Branch A",
+				"- Leaf A",
+				"",
+				"<!-- keep me -->",
+				"",
+				"## Branch B",
+				"",
+			].join("\n")
+		);
+
+		const branchA = base.data.nodeData.children![0];
+		const branchB = base.data.nodeData.children![1];
+		base.data.arrows = [
+			{
+				id: "arr-1",
+				label: "rel",
+				from: branchA.id,
+				to: branchB.id,
+				delta1: { x: 0, y: 0 },
+				delta2: { x: 0, y: 0 },
+			},
+		];
+
+		const withExtra = mindMapToMarkdown(base.data, {
+			existingFrontmatterRaw: base.frontmatter.raw,
+			style: "heading-list",
+			direction: base.direction,
+			preservedBlocks: base.preservedBlocks,
+		});
+		expect(withExtra).toContain("<!-- keep me -->");
+		expect(withExtra).toContain("<!-- mindmap-extra:");
+
+		// Re-parse with mindmap-extra nodeIds applied, then delete Leaf A: comment must still be preserved under surviving ancestor
+		const reparsed = markdownToMindMap(withExtra);
+		reparsed.data.nodeData.children![0].children = [];
+		const afterDelete = mindMapToMarkdown(reparsed.data, {
+			existingFrontmatterRaw: reparsed.frontmatter.raw,
+			style: "heading-list",
+			direction: reparsed.direction,
+			preservedBlocks: reparsed.preservedBlocks,
+		});
+		expect(afterDelete).toContain("<!-- keep me -->");
+		expect(afterDelete).toContain("## Branch A");
+		expect(afterDelete).toContain("## Branch B");
+	});
 });

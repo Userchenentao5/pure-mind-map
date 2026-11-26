@@ -14,16 +14,26 @@ export interface FrontmatterResult {
 	body: string;
 }
 
+export interface PreservedMarkdownBlock {
+	raw: string;
+	afterNodeId: string | null;
+	ancestorNodeIds?: string[];
+	blankBefore: boolean;
+	blankAfter: boolean;
+}
+
 export interface ParsedMindMap {
 	frontmatter: FrontmatterResult;
 	data: MindElixirData;
 	direction: MindMapDirection;
+	preservedBlocks: PreservedMarkdownBlock[];
 }
 
 export interface SerializeOptions {
 	existingFrontmatterRaw?: string | null;
 	style: MarkdownSerializeStyle;
 	direction?: MindMapDirection;
+	preservedBlocks?: PreservedMarkdownBlock[];
 }
 
 interface ExtraMetadata {
@@ -168,6 +178,182 @@ function escapeTopicForMarkdown(topic: string): string {
 	return topic.replace(/\r?\n/g, "<br>").trim() || "未命名节点";
 }
 
+type BodyToken =
+	| { kind: "blank" }
+	| { kind: "line"; raw: string; lineIndex: number }
+	| {
+			kind: "raw-block";
+			raw: string;
+			lineIndex: number;
+			blankBefore: boolean;
+			blankAfter: boolean;
+	  };
+
+interface CapturedPreservedBlock {
+	raw: string;
+	anchorNode: NodeObj | null;
+	blankBefore: boolean;
+	blankAfter: boolean;
+}
+
+function matchFenceOpen(rawLine: string): { char: "`" | "~"; length: number } | null {
+	const backtickMatch = rawLine.match(/^\s*(`{3,})[^`]*$/);
+	if (backtickMatch) {
+		return { char: "`", length: backtickMatch[1].length };
+	}
+	const tildeMatch = rawLine.match(/^\s*(~{3,}).*$/);
+	if (tildeMatch) {
+		return { char: "~", length: tildeMatch[1].length };
+	}
+	return null;
+}
+
+function isFenceClose(rawLine: string, char: "`" | "~", minLength: number): boolean {
+	const trimmed = rawLine.trim();
+	if (trimmed.length < minLength) return false;
+	for (let i = 0; i < trimmed.length; i++) {
+		if (trimmed[i] !== char) return false;
+	}
+	return true;
+}
+
+function tokenizeMarkdownBody(lines: string[]): BodyToken[] {
+	const rawTokens: Array<
+		| { kind: "blank" }
+		| { kind: "line"; raw: string; lineIndex: number }
+		| { kind: "raw-block"; raw: string; lineIndex: number }
+	> = [];
+
+	for (let i = 0; i < lines.length; i++) {
+		const rawLine = lines[i];
+		const lineIndex = i + 1;
+		const trimmed = rawLine.trim();
+
+		if (!trimmed) {
+			rawTokens.push({ kind: "blank" });
+			continue;
+		}
+
+		// 1. Fenced code blocks (``` or ~~~)
+		const fenceOpen = matchFenceOpen(rawLine);
+		if (fenceOpen) {
+			const blockLines = [rawLine];
+			while (i + 1 < lines.length) {
+				i++;
+				blockLines.push(lines[i]);
+				if (isFenceClose(lines[i], fenceOpen.char, fenceOpen.length)) {
+					break;
+				}
+			}
+			rawTokens.push({
+				kind: "raw-block",
+				raw: blockLines.join("\n"),
+				lineIndex,
+			});
+			continue;
+		}
+
+		// 2. Standalone HTML comments (single-line or multi-line)
+		if (trimmed.startsWith("<!--")) {
+			if (/^(?:<!--[\s\S]*?-->\s*)+$/.test(trimmed)) {
+				rawTokens.push({
+					kind: "raw-block",
+					raw: rawLine,
+					lineIndex,
+				});
+				continue;
+			}
+			if (!trimmed.includes("-->")) {
+				const blockLines = [rawLine];
+				while (i + 1 < lines.length) {
+					i++;
+					blockLines.push(lines[i]);
+					if (lines[i].includes("-->")) {
+						break;
+					}
+				}
+				rawTokens.push({
+					kind: "raw-block",
+					raw: blockLines.join("\n"),
+					lineIndex,
+				});
+				continue;
+			}
+		}
+
+		// 3. Standalone Obsidian comments (%% ... %%, including empty %%%%)
+		if (trimmed.startsWith("%%")) {
+			if (/^(?:%%[\s\S]*?%%\s*)+$/.test(trimmed)) {
+				rawTokens.push({
+					kind: "raw-block",
+					raw: rawLine,
+					lineIndex,
+				});
+				continue;
+			}
+			if (!trimmed.slice(2).includes("%%")) {
+				let closingIndex = -1;
+				for (let j = i + 1; j < lines.length; j++) {
+					if (lines[j].includes("%%")) {
+						closingIndex = j;
+						break;
+					}
+				}
+				if (closingIndex !== -1) {
+					const blockLines = lines.slice(i, closingIndex + 1);
+					i = closingIndex;
+					rawTokens.push({
+						kind: "raw-block",
+						raw: blockLines.join("\n"),
+						lineIndex,
+					});
+					continue;
+				}
+			}
+		}
+
+		rawTokens.push({ kind: "line", raw: rawLine, lineIndex });
+	}
+
+	const tokens: BodyToken[] = [];
+	let hasSeenNonBlank = false;
+	let sawBlankSincePrevNonBlank = false;
+
+	for (let i = 0; i < rawTokens.length; i++) {
+		const token = rawTokens[i];
+		if (token.kind === "blank") {
+			sawBlankSincePrevNonBlank = true;
+			tokens.push(token);
+			continue;
+		}
+
+		if (token.kind === "raw-block") {
+			const blankBefore = hasSeenNonBlank && sawBlankSincePrevNonBlank;
+			let j = i + 1;
+			let sawBlankAfter = false;
+			while (j < rawTokens.length && rawTokens[j].kind === "blank") {
+				sawBlankAfter = true;
+				j++;
+			}
+			const blankAfter = sawBlankAfter && j < rawTokens.length;
+			tokens.push({
+				kind: "raw-block",
+				raw: token.raw,
+				lineIndex: token.lineIndex,
+				blankBefore,
+				blankAfter,
+			});
+		} else {
+			tokens.push(token);
+		}
+
+		hasSeenNonBlank = true;
+		sawBlankSincePrevNonBlank = false;
+	}
+
+	return tokens;
+}
+
 export function markdownToMindMap(
 	markdown: string,
 	fallbackTitle = "中心主题"
@@ -187,21 +373,53 @@ export function markdownToMindMap(
 		}
 	}
 
-	const lines = body.split(/\r?\n/);
+	const tokens = tokenizeMarkdownBody(body.split(/\r?\n/));
 	const usedIds = new Set<string>();
+	const capturedBlocks: CapturedPreservedBlock[] = [];
+	const parentMap = new WeakMap<NodeObj, NodeObj | null>();
 
-	const hasHeading = lines.some((l) => /^\s*#{1,6}\s+/.test(l));
+	const hasHeading = tokens.some(
+		(t) => t.kind === "line" && /^\s*#{1,6}\s+/.test(t.raw)
+	);
 	let root: NodeObj;
 
 	if (hasHeading) {
-		root = parseHeadingAndListBody(lines, fallbackTitle, usedIds);
+		root = parseHeadingAndListBody(
+			tokens,
+			fallbackTitle,
+			usedIds,
+			capturedBlocks,
+			parentMap
+		);
 	} else {
-		root = parsePureListBody(lines, fallbackTitle, usedIds);
+		root = parsePureListBody(
+			tokens,
+			fallbackTitle,
+			usedIds,
+			capturedBlocks,
+			parentMap
+		);
 	}
 
 	if (extra?.nodeIds) {
 		applySavedNodeIds(root, "0", extra.nodeIds);
 	}
+
+	const preservedBlocks: PreservedMarkdownBlock[] = capturedBlocks.map((block) => {
+		const ancestorNodeIds: string[] = [];
+		let cursor = block.anchorNode ? parentMap.get(block.anchorNode) ?? null : null;
+		while (cursor) {
+			ancestorNodeIds.push(cursor.id);
+			cursor = parentMap.get(cursor) ?? null;
+		}
+		return {
+			raw: block.raw,
+			afterNodeId: block.anchorNode ? block.anchorNode.id : null,
+			ancestorNodeIds,
+			blankBefore: block.blankBefore,
+			blankAfter: block.blankAfter,
+		};
+	});
 
 	const data: MindElixirData = {
 		nodeData: root,
@@ -214,20 +432,23 @@ export function markdownToMindMap(
 		frontmatter,
 		data,
 		direction,
+		preservedBlocks,
 	};
 }
 
 function parseHeadingAndListBody(
-	lines: string[],
+	tokens: BodyToken[],
 	fallbackTitle: string,
-	usedIds: Set<string>
+	usedIds: Set<string>,
+	capturedBlocks: CapturedPreservedBlock[],
+	parentMap: WeakMap<NodeObj, NodeObj | null>
 ): NodeObj {
 	let root: NodeObj | null = null;
 	let isSyntheticRoot = false;
 	const headingStack: Array<{ level: number; node: NodeObj }> = [];
 	const listStack: Array<{ indent: number; node: NodeObj }> = [];
 	let currentHeadingParent: NodeObj | null = null;
-	let lineIndex = 0;
+	let lastNode: NodeObj | null = null;
 
 	const ensureRoot = (): NodeObj => {
 		if (!root) {
@@ -236,6 +457,7 @@ function parseHeadingAndListBody(
 				topic: fallbackTitle,
 				children: [],
 			};
+			parentMap.set(root, null);
 			isSyntheticRoot = true;
 			headingStack.push({ level: 1, node: root });
 			currentHeadingParent = root;
@@ -243,14 +465,21 @@ function parseHeadingAndListBody(
 		return root;
 	};
 
-	for (const rawLine of lines) {
-		lineIndex++;
-		const trimmed = rawLine.trim();
-		if (!trimmed) continue;
-		// Skip empty Obsidian comment markers (e.g. %%%% or %% %%) and HTML comments
-		if (/^%%\s*%%$/.test(trimmed) || /^<!--[\s\S]*-->$/.test(trimmed)) {
+	for (const token of tokens) {
+		if (token.kind === "blank") continue;
+
+		if (token.kind === "raw-block") {
+			capturedBlocks.push({
+				raw: token.raw,
+				anchorNode: lastNode,
+				blankBefore: token.blankBefore,
+				blankAfter: token.blankAfter,
+			});
 			continue;
 		}
+
+		const { raw: rawLine, lineIndex } = token;
+		const trimmed = rawLine.trim();
 
 		const headingMatch = rawLine.match(/^\s*(#{1,6})\s+(.+?)\s*#*$/);
 		if (headingMatch) {
@@ -269,11 +498,13 @@ function parseHeadingAndListBody(
 						topic,
 						children: [],
 					};
+					parentMap.set(root, null);
 					isSyntheticRoot = false;
 				}
 				headingStack.length = 0;
 				headingStack.push({ level: 1, node: root });
 				currentHeadingParent = root;
+				lastNode = root;
 				continue;
 			}
 
@@ -297,9 +528,11 @@ function parseHeadingAndListBody(
 					: ensuredRoot;
 			parent.children = parent.children ?? [];
 			parent.children.push(node);
+			parentMap.set(node, parent);
 
 			headingStack.push({ level, node });
 			currentHeadingParent = node;
+			lastNode = node;
 			continue;
 		}
 
@@ -328,8 +561,10 @@ function parseHeadingAndListBody(
 					: baseParent;
 			parent.children = parent.children ?? [];
 			parent.children.push(node);
+			parentMap.set(node, parent);
 
 			listStack.push({ indent, node });
+			lastNode = node;
 			continue;
 		}
 
@@ -345,24 +580,39 @@ function parseHeadingAndListBody(
 		};
 		parent.children = parent.children ?? [];
 		parent.children.push(node);
+		parentMap.set(node, parent);
+		lastNode = node;
 	}
 
 	return ensureRoot();
 }
 
 function parsePureListBody(
-	lines: string[],
+	tokens: BodyToken[],
 	fallbackTitle: string,
-	usedIds: Set<string>
+	usedIds: Set<string>,
+	capturedBlocks: CapturedPreservedBlock[],
+	parentMap: WeakMap<NodeObj, NodeObj | null>
 ): NodeObj {
 	const topNodes: NodeObj[] = [];
 	const listStack: Array<{ indent: number; node: NodeObj }> = [];
-	let lineIndex = 0;
+	let lastNode: NodeObj | null = null;
 
-	for (const rawLine of lines) {
-		lineIndex++;
+	for (const token of tokens) {
+		if (token.kind === "blank") continue;
+
+		if (token.kind === "raw-block") {
+			capturedBlocks.push({
+				raw: token.raw,
+				anchorNode: lastNode,
+				blankBefore: token.blankBefore,
+				blankAfter: token.blankAfter,
+			});
+			continue;
+		}
+
+		const { raw: rawLine, lineIndex } = token;
 		const trimmed = rawLine.trim();
-		if (!trimmed) continue;
 
 		const listMatch = rawLine.match(/^(\s*)[-*+]\s+(.*)$/);
 		const indent = listMatch ? getIndentWidth(listMatch[1]) : 0;
@@ -383,32 +633,42 @@ function parsePureListBody(
 
 		if (listStack.length === 0) {
 			topNodes.push(node);
+			parentMap.set(node, null);
 		} else {
 			const parent = listStack[listStack.length - 1].node;
 			parent.children = parent.children ?? [];
 			parent.children.push(node);
+			parentMap.set(node, parent);
 		}
 
 		listStack.push({ indent, node });
+		lastNode = node;
 	}
 
 	if (topNodes.length === 0) {
-		return {
+		const root: NodeObj = {
 			id: makeDeterministicId("root", usedIds),
 			topic: fallbackTitle,
 			children: [],
 		};
+		parentMap.set(root, null);
+		return root;
 	}
 
 	if (topNodes.length === 1) {
 		return topNodes[0];
 	}
 
-	return {
+	const root: NodeObj = {
 		id: makeDeterministicId("root", usedIds),
 		topic: fallbackTitle,
 		children: topNodes,
 	};
+	parentMap.set(root, null);
+	for (const topNode of topNodes) {
+		parentMap.set(topNode, root);
+	}
+	return root;
 }
 
 function applySavedNodeIds(
@@ -468,6 +728,104 @@ function upsertFrontmatterLines(
 	return result.join("\n").trim();
 }
 
+class MarkdownBodyWriter {
+	public readonly lines: string[] = [];
+	private pendingBlank = false;
+
+	public pushNodeLine(line: string, forceBlankBefore = false): void {
+		if (
+			(forceBlankBefore || this.pendingBlank) &&
+			this.lines.length > 0 &&
+			this.lines[this.lines.length - 1] !== ""
+		) {
+			this.lines.push("");
+		}
+		this.pendingBlank = false;
+		this.lines.push(line);
+	}
+
+	public pushPreservedBlocks(
+		blocks: PreservedMarkdownBlock[] | undefined,
+		forceBlankBeforeFirst = false
+	): void {
+		if (!blocks || blocks.length === 0) return;
+		for (let i = 0; i < blocks.length; i++) {
+			const block = blocks[i];
+			const needsBlank =
+				(i === 0 && forceBlankBeforeFirst) ||
+				block.blankBefore ||
+				this.pendingBlank;
+			if (
+				needsBlank &&
+				this.lines.length > 0 &&
+				this.lines[this.lines.length - 1] !== ""
+			) {
+				this.lines.push("");
+			}
+			this.lines.push(block.raw);
+			this.pendingBlank = block.blankAfter;
+		}
+	}
+}
+
+function collectPresentNodeIds(node: NodeObj, out: Set<string>): void {
+	out.add(node.id);
+	const children = node.children ?? [];
+	for (const child of children) {
+		collectPresentNodeIds(child, out);
+	}
+}
+
+function partitionPreservedBlocks(
+	root: NodeObj,
+	preservedBlocks: PreservedMarkdownBlock[] | undefined
+): {
+	preambleBlocks: PreservedMarkdownBlock[];
+	blocksAfterNode: Map<string, PreservedMarkdownBlock[]>;
+	trailingBlocks: PreservedMarkdownBlock[];
+} {
+	const preambleBlocks: PreservedMarkdownBlock[] = [];
+	const blocksAfterNode = new Map<string, PreservedMarkdownBlock[]>();
+	const trailingBlocks: PreservedMarkdownBlock[] = [];
+
+	if (!preservedBlocks || preservedBlocks.length === 0) {
+		return { preambleBlocks, blocksAfterNode, trailingBlocks };
+	}
+
+	const presentNodeIds = new Set<string>();
+	collectPresentNodeIds(root, presentNodeIds);
+
+	const appendAfter = (nodeId: string, block: PreservedMarkdownBlock): void => {
+		const list = blocksAfterNode.get(nodeId);
+		if (list) {
+			list.push(block);
+		} else {
+			blocksAfterNode.set(nodeId, [block]);
+		}
+	};
+
+	for (const block of preservedBlocks) {
+		if (block.afterNodeId === null) {
+			preambleBlocks.push(block);
+			continue;
+		}
+		if (presentNodeIds.has(block.afterNodeId)) {
+			appendAfter(block.afterNodeId, block);
+			continue;
+		}
+		const fallbackAncestor = block.ancestorNodeIds?.find((id) =>
+			presentNodeIds.has(id)
+		);
+		if (fallbackAncestor) {
+			appendAfter(fallbackAncestor, block);
+			continue;
+		}
+		trailingBlocks.push(block);
+	}
+
+	return { preambleBlocks, blocksAfterNode, trailingBlocks };
+}
+
 export function mindMapToMarkdown(
 	data: MindElixirData,
 	options: SerializeOptions
@@ -478,16 +836,22 @@ export function mindMapToMarkdown(
 		[MINDMAP_DIRECTION_KEY]: direction,
 	});
 
-	const lines: string[] = [];
 	const root = data.nodeData;
+	const { preambleBlocks, blocksAfterNode, trailingBlocks } =
+		partitionPreservedBlocks(root, options.preservedBlocks);
+	const writer = new MarkdownBodyWriter();
+
+	writer.pushPreservedBlocks(preambleBlocks);
 
 	if (options.style === "list") {
-		serializeAsList(root, 0, lines);
+		serializeAsList(root, 0, writer, blocksAfterNode);
 	} else {
-		serializeAsHeadingList(root, lines);
+		serializeAsHeadingList(root, writer, blocksAfterNode);
 	}
 
-	let output = `---\n${frontmatterBody}\n---\n\n${lines.join("\n")}\n`;
+	writer.pushPreservedBlocks(trailingBlocks, true);
+
+	let output = `---\n${frontmatterBody}\n---\n\n${writer.lines.join("\n")}\n`;
 
 	const hasArrows = Boolean(data.arrows && data.arrows.length > 0);
 	const hasSummaries = Boolean(data.summaries && data.summaries.length > 0);
@@ -505,26 +869,37 @@ export function mindMapToMarkdown(
 	return output;
 }
 
-function serializeAsHeadingList(root: NodeObj, lines: string[]): void {
-	lines.push(`# ${escapeTopicForMarkdown(root.topic)}`);
+function serializeAsHeadingList(
+	root: NodeObj,
+	writer: MarkdownBodyWriter,
+	blocksAfterNode: Map<string, PreservedMarkdownBlock[]>
+): void {
+	writer.pushNodeLine(`# ${escapeTopicForMarkdown(root.topic)}`);
+	writer.pushPreservedBlocks(blocksAfterNode.get(root.id));
 
 	const mainBranches = root.children ?? [];
 	for (const branch of mainBranches) {
-		lines.push("");
-		lines.push(`## ${escapeTopicForMarkdown(branch.topic)}`);
+		writer.pushNodeLine(`## ${escapeTopicForMarkdown(branch.topic)}`, true);
+		writer.pushPreservedBlocks(blocksAfterNode.get(branch.id));
 		const subChildren = branch.children ?? [];
 		for (const child of subChildren) {
-			serializeAsList(child, 0, lines);
+			serializeAsList(child, 0, writer, blocksAfterNode);
 		}
 	}
 }
 
-function serializeAsList(node: NodeObj, depth: number, lines: string[]): void {
+function serializeAsList(
+	node: NodeObj,
+	depth: number,
+	writer: MarkdownBodyWriter,
+	blocksAfterNode: Map<string, PreservedMarkdownBlock[]>
+): void {
 	const indent = "  ".repeat(depth);
-	lines.push(`${indent}- ${escapeTopicForMarkdown(node.topic)}`);
+	writer.pushNodeLine(`${indent}- ${escapeTopicForMarkdown(node.topic)}`);
+	writer.pushPreservedBlocks(blocksAfterNode.get(node.id));
 	const children = node.children ?? [];
 	for (const child of children) {
-		serializeAsList(child, depth + 1, lines);
+		serializeAsList(child, depth + 1, writer, blocksAfterNode);
 	}
 }
 

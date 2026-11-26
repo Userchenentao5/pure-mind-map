@@ -5,7 +5,11 @@ import {
 	type MarkdownSerializeStyle,
 	type MindMapDirection,
 } from "../settings/types";
-import { markdownToMindMap, mindMapToMarkdown } from "./markdownParser";
+import {
+	markdownToMindMap,
+	mindMapToMarkdown,
+	type PreservedMarkdownBlock,
+} from "./markdownParser";
 
 export interface ReconcileOptions {
 	fallbackTitle: string;
@@ -30,6 +34,7 @@ export type ReconcileDecision =
  */
 export class MindMapDocument {
 	private existingFrontmatterRaw: string | null = null;
+	private preservedBlocks: PreservedMarkdownBlock[] = [];
 	private currentDirection: MindMapDirection;
 	private lastSavedMarkdown = "";
 	private hasLocalEdits = false;
@@ -73,6 +78,7 @@ export class MindMapDocument {
 
 	public clear(defaultDirection: MindMapDirection): void {
 		this.existingFrontmatterRaw = null;
+		this.preservedBlocks = [];
 		this.currentDirection = defaultDirection;
 		this.lastSavedMarkdown = "";
 		this.hasLocalEdits = false;
@@ -98,6 +104,7 @@ export class MindMapDocument {
 			existingFrontmatterRaw: this.existingFrontmatterRaw,
 			style,
 			direction: this.currentDirection,
+			preservedBlocks: this.preservedBlocks,
 		});
 	}
 
@@ -112,6 +119,7 @@ export class MindMapDocument {
 
 		const parsed = markdownToMindMap(markdown, options.fallbackTitle);
 		this.existingFrontmatterRaw = parsed.frontmatter.raw;
+		this.preservedBlocks = parsed.preservedBlocks;
 		this.currentDirection = parsed.frontmatter.properties[MINDMAP_DIRECTION_KEY]
 			? parsed.direction
 			: options.defaultDirection;
