@@ -3,7 +3,9 @@ import { DEFAULT_HOTKEYS } from "../settings/types";
 import {
 	buildCanvasKeypressOptions,
 	buildCanvasTheme,
+	createCanvasRelinkScheduler,
 	formatHotkeyForDisplay,
+	isImageEventTarget,
 	normalizeHotkeyKey,
 	resolveEffectiveDarkMode,
 	type CanvasKeypressTarget,
@@ -124,5 +126,58 @@ describe("canvasConfig", () => {
 		target.currentNode = { nodeObj: { children: [{}] } };
 		keymap[" "](keyEvt());
 		expect(calls).toEqual(["expandNode"]);
+	});
+
+	it("coalesces image-load relinks into one frame and respects readiness and cancellation", () => {
+		expect(isImageEventTarget({ tagName: "IMG" } as unknown as EventTarget)).toBe(true);
+		expect(isImageEventTarget({ tagName: "img" } as unknown as EventTarget)).toBe(true);
+		expect(isImageEventTarget({ tagName: "DIV" } as unknown as EventTarget)).toBe(false);
+		expect(isImageEventTarget(null)).toBe(false);
+
+		const frames = new Map<number, () => void>();
+		let nextId = 1;
+		let ready = true;
+		let relinkCount = 0;
+
+		const scheduler = createCanvasRelinkScheduler({
+			isReady: () => ready,
+			linkDiv: () => {
+				relinkCount++;
+			},
+			requestFrame: (cb) => {
+				const id = nextId++;
+				frames.set(id, cb);
+				return id;
+			},
+			cancelFrame: (id) => {
+				frames.delete(id);
+			},
+		});
+
+		// Multiple concurrent image loads coalesce into a single linkDiv() call
+		scheduler.schedule();
+		scheduler.schedule();
+		scheduler.schedule();
+		expect(frames.size).toBe(1);
+
+		const [firstId, firstCb] = Array.from(frames.entries())[0];
+		frames.delete(firstId);
+		firstCb();
+		expect(relinkCount).toBe(1);
+
+		// Hidden / detached canvas skips linkDiv()
+		ready = false;
+		scheduler.schedule();
+		const [secondId, secondCb] = Array.from(frames.entries())[0];
+		frames.delete(secondId);
+		secondCb();
+		expect(relinkCount).toBe(1);
+
+		// Cancellation aborts pending frame cleanly
+		ready = true;
+		scheduler.schedule();
+		expect(frames.size).toBe(1);
+		scheduler.cancel();
+		expect(frames.size).toBe(0);
 	});
 });
