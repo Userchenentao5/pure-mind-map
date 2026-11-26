@@ -178,4 +178,40 @@ describe("MindMapDocument", () => {
 			original.replace("# Project", "# Project v2")
 		);
 	});
+
+	it("tracks mindmap-style frontmatter precedence and persists explicit style preset changes", () => {
+		const doc = new MindMapDocument("side", "classic");
+		const mdNoStyle = "---\nmindmap-plugin: basic\nmindmap-direction: right\n---\n\n# Plan\n";
+
+		const mounted = doc.reconcileExternalMarkdown(mdNoStyle, {
+			fallbackTitle: "Plan",
+			defaultDirection: "side",
+			defaultStylePreset: "card",
+			clear: true,
+			hasCanvas: false,
+		});
+		expect(mounted.action).toBe("mount");
+		if (mounted.action === "noop") throw new Error("Expected mount");
+		expect(mounted.stylePreset).toBe("card");
+		expect(doc.hasExplicitStyleInNote()).toBe(false);
+
+		// Explicit style switch writes mindmap-style to frontmatter
+		doc.setStylePreset("bordered", true);
+		doc.markLocalEdit();
+		const serialized = doc.serialize(mounted.data, "heading-list");
+		expect(serialized).toContain("mindmap-style: bordered");
+
+		// Reconciling a note with explicit mindmap-style overrides defaultStylePreset
+		const reloaded = doc.reconcileExternalMarkdown(serialized, {
+			fallbackTitle: "Plan",
+			defaultDirection: "side",
+			defaultStylePreset: "classic",
+			clear: true,
+			hasCanvas: false,
+		});
+		expect(reloaded.action).toBe("mount");
+		if (reloaded.action === "noop") throw new Error("Expected mount");
+		expect(reloaded.stylePreset).toBe("bordered");
+		expect(doc.hasExplicitStyleInNote()).toBe(true);
+	});
 });

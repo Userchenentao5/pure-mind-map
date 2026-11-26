@@ -3,7 +3,10 @@ import { DEFAULT_HOTKEYS } from "../settings/types";
 import {
 	buildCanvasKeypressOptions,
 	buildCanvasTheme,
+	buildCenterBezierPath,
 	buildContextMenuOption,
+	buildHorizontalBracketPath,
+	buildVerticalBracketPath,
 	createCanvasRelinkScheduler,
 	formatHotkeyForDisplay,
 	isImageEventTarget,
@@ -196,5 +199,28 @@ describe("canvasConfig", () => {
 
 		const jaMenu = buildContextMenuOption("ja");
 		expect(jaMenu.locale?.addChild).toBe("子ノードを追加");
+	});
+
+	it("attaches rounded orthogonal or bezier branch generators for card and bordered presets", () => {
+		const classicTheme = buildCanvasTheme("light", false, () => "", "classic");
+		expect(classicTheme.generateMainBranch).toBeUndefined();
+		expect(classicTheme.generateSubBranch).toBeUndefined();
+
+		const cardTheme = buildCanvasTheme("dark", true, () => "", "card");
+		expect(typeof cardTheme.generateMainBranch).toBe("function");
+		expect(typeof cardTheme.generateSubBranch).toBe("function");
+
+		const borderedTheme = buildCanvasTheme("light", false, () => "", "bordered");
+		expect(typeof borderedTheme.generateMainBranch).toBe("function");
+		expect(typeof borderedTheme.generateSubBranch).toBe("function");
+
+		// Geometry helpers: aligned vs elbowed horizontal/vertical brackets and bezier
+		expect(buildHorizontalBracketPath(100, 50, 200, 50)).toBe("M 100 50 H 200");
+		expect(buildHorizontalBracketPath(100, 50, 200, 110)).toContain("Q 150 50");
+		expect(buildVerticalBracketPath(50, 100, 50, 200)).toBe("M 50 100 V 200");
+		expect(buildVerticalBracketPath(50, 100, 110, 200)).toContain("Q 50 150");
+		expect(buildCenterBezierPath(100, 50, 200, 110)).toBe(
+			"M 100 50 C 150 50 150 110 200 110"
+		);
 	});
 });

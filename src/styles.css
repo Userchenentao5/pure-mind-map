@@ -60,7 +60,7 @@
 .mm-floating-toolbar .mm-toolbar-btn.mm-is-hidden,
 .view-header .view-action.mm-is-hidden,
 .mm-is-hidden {
-	display: none;
+	display: none !important;
 }
 
 .mm-view-container .mm-floating-toolbar button.mm-toolbar-btn,
@@ -408,6 +408,400 @@
 /* Keep MindElixir marquee selection overlay cleanly visible above Obsidian panes */
 body > div:has(> .selection-area) {
 	z-index: 100 !important;
+}
+
+/* ============================================================
+   Mind Map Style Presets (Card Logic Tree & Soft Bordered)
+   ============================================================ */
+.mm-canvas-host.mm-style-card .mm-mind-elixir-root .map-container .rhs .me-wrapper,
+.mm-canvas-host.mm-style-card .mm-mind-elixir-root .map-container .lhs .me-wrapper,
+.mm-canvas-host.mm-style-bordered .mm-mind-elixir-root .map-container .rhs .me-wrapper,
+.mm-canvas-host.mm-style-bordered .mm-mind-elixir-root .map-container .lhs .me-wrapper {
+	display: flex;
+	align-items: center;
+}
+
+.mm-canvas-host.mm-style-card .mm-mind-elixir-root .map-container .me-main > .me-wrapper > .me-parent,
+.mm-canvas-host.mm-style-bordered .mm-mind-elixir-root .map-container .me-main > .me-wrapper > .me-parent {
+	margin: 10px 14px;
+	padding: 0;
+}
+
+.mm-canvas-host.mm-style-card .mm-mind-elixir-root .map-container .me-children .me-parent,
+.mm-canvas-host.mm-style-bordered .mm-mind-elixir-root .map-container .me-children .me-parent {
+	margin: calc(var(--node-gap-y, 12px) / 2) 0;
+	padding: 4px var(--node-gap-x, 30px);
+}
+
+.mm-canvas-host.mm-style-card .mm-mind-elixir-root .map-container .me-main > .me-wrapper > .me-parent > .me-tpc,
+.mm-canvas-host.mm-style-bordered .mm-mind-elixir-root .map-container .me-main > .me-wrapper > .me-parent > .me-tpc {
+	border-radius: 10px;
+	padding: 8px 18px;
+	border-width: 1.5px;
+}
+
+.mm-canvas-host.mm-style-card .mm-mind-elixir-root .map-container .me-children .me-parent > .me-tpc,
+.mm-canvas-host.mm-style-bordered .mm-mind-elixir-root .map-container .me-children .me-parent > .me-tpc {
+	background-color: var(--main-bgcolor);
+	color: var(--main-color);
+	border: 1.5px solid var(--background-modifier-border);
+	border-radius: 8px;
+	padding: 6px 14px;
+}
+
+.mm-canvas-host.mm-style-card .mm-mind-elixir-root .map-container .me-tpc.selected,
+.mm-canvas-host.mm-style-bordered .mm-mind-elixir-root .map-container .me-tpc.selected {
+	outline: 2px solid var(--interactive-accent);
+	outline-offset: 0;
+}
+
+/* Classic style: keep clean minimalist look without collapse/expand or quick-add handles */
+.mm-canvas-host.mm-style-classic .mm-mind-elixir-root .map-container .me-parent > .me-epd,
+.mm-canvas-host.mm-style-classic .mm-mind-elixir-root .map-container .mm-node-quick-add,
+.mm-canvas-host.mm-style-classic .mm-mind-elixir-root .map-container .mm-root-collapse-btn {
+	display: none !important;
+}
+
+/* Root collapsed state: hide all branch trees & connectors cleanly while keeping root steady */
+.mm-mind-elixir-root .map-container .me-nodes.mm-root-collapsed > .me-main,
+.mm-mind-elixir-root .map-container .me-nodes.mm-root-collapsed > svg.lines,
+.mm-mind-elixir-root .map-container .me-nodes.mm-root-collapsed > svg.topiclinks,
+.mm-mind-elixir-root .map-container .me-nodes.mm-root-collapsed > svg.summary,
+.mm-mind-elixir-root .map-container .me-nodes.mm-root-collapsed > .label-container {
+	display: none !important;
+}
+
+/* ============================================================
+   Node Quick Actions (Card & Bordered styles):
+   FlowUs-style mutually exclusive controls:
+   - Click/select node -> show (+) add child button
+   - Hover outgoing branch line after unselected node -> show (<) collapse button
+   - Collapsed unselected node -> show count badge
+   ============================================================ */
+.mm-canvas-host.mm-style-card .mm-mind-elixir-root .map-container .me-parent > .me-epd,
+.mm-canvas-host.mm-style-bordered .mm-mind-elixir-root .map-container .me-parent > .me-epd {
+	width: 20px;
+	height: 20px;
+	border-radius: 999px;
+	background-image: none !important;
+	background-color: var(--background-primary);
+	border: 1.5px solid var(--text-muted);
+	color: var(--text-normal);
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 11px;
+	font-weight: 600;
+	line-height: 1;
+	cursor: pointer;
+	box-shadow: 0 1px 4px rgba(0, 0, 0, 0.14);
+	transition: opacity 0.15s ease, background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+	z-index: 15;
+}
+
+/* Generous invisible hover hit-zone over the outgoing connector line */
+.mm-canvas-host.mm-style-card .mm-mind-elixir-root .map-container .me-parent > .me-epd::after,
+.mm-canvas-host.mm-style-bordered .mm-mind-elixir-root .map-container .me-parent > .me-epd::after {
+	content: "";
+	position: absolute;
+	inset: -8px -12px;
+}
+
+/* Expanded state: ONLY show chevron when hovering the outgoing line (never simultaneously with +) */
+.mm-canvas-host.mm-style-card .mm-mind-elixir-root .map-container .me-parent > .me-epd.minus,
+.mm-canvas-host.mm-style-bordered .mm-mind-elixir-root .map-container .me-parent > .me-epd.minus {
+	opacity: 0;
+}
+
+.mm-canvas-host.mm-style-card .mm-mind-elixir-root .map-container .me-parent > .me-epd.minus:hover,
+.mm-canvas-host.mm-style-bordered .mm-mind-elixir-root .map-container .me-parent > .me-epd.minus:hover {
+	opacity: 1;
+}
+
+/* Selected node shows (+) exclusively; hide collapse/expand handle on the selected node */
+.mm-canvas-host.mm-style-card .mm-mind-elixir-root .map-container .me-parent:has(> .me-tpc.selected) > .me-epd,
+.mm-canvas-host.mm-style-bordered .mm-mind-elixir-root .map-container .me-parent:has(> .me-tpc.selected) > .me-epd {
+	opacity: 0 !important;
+	pointer-events: none;
+}
+
+.mm-canvas-host.mm-style-card .mm-mind-elixir-root .map-container .rhs .me-parent > .me-epd.minus::before,
+.mm-canvas-host.mm-style-bordered .mm-mind-elixir-root .map-container .rhs .me-parent > .me-epd.minus::before {
+	content: "‹";
+	font-size: 15px;
+	line-height: 1;
+	transform: translateY(-0.5px);
+}
+
+.mm-canvas-host.mm-style-card .mm-mind-elixir-root .map-container .lhs .me-parent > .me-epd.minus::before,
+.mm-canvas-host.mm-style-bordered .mm-mind-elixir-root .map-container .lhs .me-parent > .me-epd.minus::before {
+	content: "›";
+	font-size: 15px;
+	line-height: 1;
+	transform: translateY(-0.5px);
+}
+
+.mm-canvas-host.mm-style-card .mm-mind-elixir-root .map-container .me-nodes.down .me-parent > .me-epd.minus::before,
+.mm-canvas-host.mm-style-bordered .mm-mind-elixir-root .map-container .me-nodes.down .me-parent > .me-epd.minus::before {
+	content: "⌃";
+	font-size: 12px;
+	line-height: 1;
+	transform: translateY(1px);
+}
+
+/* Collapsed state (when not selected): visible badge showing hidden child count */
+.mm-canvas-host.mm-style-card .mm-mind-elixir-root .map-container .me-parent > .me-epd:not(.minus),
+.mm-canvas-host.mm-style-bordered .mm-mind-elixir-root .map-container .me-parent > .me-epd:not(.minus) {
+	opacity: 1;
+	background-color: var(--background-secondary);
+	border-color: var(--interactive-accent);
+	color: var(--interactive-accent);
+}
+
+.mm-canvas-host.mm-style-card .mm-mind-elixir-root .map-container .me-parent > .me-epd:not(.minus)::before,
+.mm-canvas-host.mm-style-bordered .mm-mind-elixir-root .map-container .me-parent > .me-epd:not(.minus)::before {
+	content: attr(data-child-count);
+}
+
+.mm-canvas-host.mm-style-card .mm-mind-elixir-root .map-container .me-parent > .me-epd:hover,
+.mm-canvas-host.mm-style-bordered .mm-mind-elixir-root .map-container .me-parent > .me-epd:hover {
+	background-color: var(--interactive-accent);
+	border-color: var(--interactive-accent);
+	color: var(--text-on-accent, #ffffff);
+}
+
+/* Position expander on the exact same connector stub (+6px from card edge) as (+) */
+.mm-canvas-host.mm-style-card .mm-mind-elixir-root .map-container .me-parent > .me-epd,
+.mm-canvas-host.mm-style-bordered .mm-mind-elixir-root .map-container .me-parent > .me-epd {
+	top: calc(50% - 10px);
+}
+
+.mm-canvas-host.mm-style-card .mm-mind-elixir-root .map-container .rhs > .me-wrapper > .me-parent > .me-epd,
+.mm-canvas-host.mm-style-bordered .mm-mind-elixir-root .map-container .rhs > .me-wrapper > .me-parent > .me-epd {
+	right: -26px;
+}
+
+.mm-canvas-host.mm-style-card .mm-mind-elixir-root .map-container .lhs > .me-wrapper > .me-parent > .me-epd,
+.mm-canvas-host.mm-style-bordered .mm-mind-elixir-root .map-container .lhs > .me-wrapper > .me-parent > .me-epd {
+	left: -26px;
+}
+
+.mm-canvas-host.mm-style-card .mm-mind-elixir-root .map-container .rhs .me-children .me-parent > .me-epd,
+.mm-canvas-host.mm-style-bordered .mm-mind-elixir-root .map-container .rhs .me-children .me-parent > .me-epd {
+	right: 4px;
+}
+
+.mm-canvas-host.mm-style-card .mm-mind-elixir-root .map-container .lhs .me-children .me-parent > .me-epd,
+.mm-canvas-host.mm-style-bordered .mm-mind-elixir-root .map-container .lhs .me-children .me-parent > .me-epd {
+	left: 4px;
+}
+
+.mm-canvas-host.mm-style-card .mm-mind-elixir-root .map-container .me-nodes.down .me-parent > .me-epd,
+.mm-canvas-host.mm-style-bordered .mm-mind-elixir-root .map-container .me-nodes.down .me-parent > .me-epd {
+	top: calc(100% + 6px);
+	left: calc(50% - 10px);
+	right: auto;
+}
+
+/* Selected Node floating (+) Add Child button */
+.mm-mind-elixir-root .map-container .mm-node-quick-add {
+	position: absolute;
+	left: var(--mm-qa-left, 0);
+	top: var(--mm-qa-top, 0);
+	width: 20px;
+	height: 20px;
+	padding: 0;
+	border-radius: 999px;
+	border: 1.5px solid var(--background-modifier-border);
+	background-color: var(--background-secondary);
+	color: var(--text-normal);
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	cursor: pointer;
+	pointer-events: all;
+	z-index: 30;
+	box-shadow: 0 2px 6px rgba(0, 0, 0, 0.16);
+	transition: background-color 0.14s ease, border-color 0.14s ease, color 0.14s ease, transform 0.12s ease;
+}
+
+.mm-mind-elixir-root .map-container .mm-node-quick-add:hover {
+	background-color: var(--interactive-accent);
+	border-color: var(--interactive-accent);
+	color: var(--text-on-accent, #ffffff);
+	transform: scale(1.08);
+}
+
+.mm-mind-elixir-root .map-container .mm-node-quick-add svg {
+	width: 13px;
+	height: 13px;
+}
+
+/* Root Node floating collapse/expand handle on outgoing connector line */
+.mm-mind-elixir-root .map-container .mm-root-collapse-btn {
+	position: absolute;
+	left: var(--mm-rc-left, 0);
+	top: var(--mm-rc-top, 0);
+	width: 20px;
+	height: 20px;
+	padding: 0;
+	border-radius: 999px;
+	border: 1.5px solid var(--text-muted);
+	background-color: var(--background-primary);
+	color: var(--text-normal);
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 11px;
+	font-weight: 600;
+	line-height: 1;
+	cursor: pointer;
+	pointer-events: all;
+	opacity: 0;
+	z-index: 25;
+	box-shadow: 0 1px 4px rgba(0, 0, 0, 0.14);
+	transition: opacity 0.15s ease, background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.mm-mind-elixir-root .map-container .mm-root-collapse-btn::after {
+	content: "";
+	position: absolute;
+	inset: -8px -12px;
+}
+
+.mm-mind-elixir-root .map-container .mm-root-collapse-btn:hover {
+	opacity: 1;
+	background-color: var(--interactive-accent);
+	border-color: var(--interactive-accent);
+	color: var(--text-on-accent, #ffffff);
+}
+
+.mm-mind-elixir-root .map-container .mm-root-collapse-btn:not(.is-collapsed)[data-dir="right"]::before {
+	content: "‹";
+	font-size: 15px;
+	line-height: 1;
+	transform: translateY(-0.5px);
+}
+
+.mm-mind-elixir-root .map-container .mm-root-collapse-btn:not(.is-collapsed)[data-dir="left"]::before {
+	content: "›";
+	font-size: 15px;
+	line-height: 1;
+	transform: translateY(-0.5px);
+}
+
+.mm-mind-elixir-root .map-container .mm-root-collapse-btn:not(.is-collapsed)[data-dir="down"]::before {
+	content: "⌃";
+	font-size: 12px;
+	line-height: 1;
+	transform: translateY(1px);
+}
+
+.mm-mind-elixir-root .map-container .mm-root-collapse-btn.is-collapsed {
+	opacity: 1;
+	background-color: var(--background-secondary);
+	border-color: var(--interactive-accent);
+	color: var(--interactive-accent);
+}
+
+.mm-mind-elixir-root .map-container .mm-root-collapse-btn.is-collapsed::before {
+	content: attr(data-child-count);
+}
+
+.mm-mind-elixir-root .map-container .mm-root-collapse-btn.is-collapsed:hover {
+	background-color: var(--interactive-accent);
+	border-color: var(--interactive-accent);
+	color: var(--text-on-accent, #ffffff);
+}
+
+/* ============================================================
+   Mind Map Node Search Bar (Ctrl+F)
+   ============================================================ */
+.mm-search-bar {
+	position: absolute;
+	top: 56px;
+	right: 16px;
+	z-index: 25;
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	padding: 4px 8px;
+	border-radius: 10px;
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.16);
+	backdrop-filter: blur(8px);
+}
+
+.mm-search-icon {
+	display: inline-flex;
+	align-items: center;
+	color: var(--text-muted);
+}
+
+.mm-search-icon svg {
+	width: 14px;
+	height: 14px;
+}
+
+.mm-search-bar .mm-search-input {
+	width: 190px;
+	height: 26px;
+	padding: 2px 6px;
+	border: none;
+	border-radius: 6px;
+	background: transparent;
+	color: var(--text-normal);
+	font-size: 13px;
+	box-shadow: none;
+	outline: none;
+}
+
+.mm-search-count {
+	font-size: 12px;
+	color: var(--text-muted);
+	white-space: nowrap;
+	min-width: 34px;
+	text-align: center;
+	font-variant-numeric: tabular-nums;
+}
+
+.mm-search-count.is-empty {
+	color: var(--text-error, #e5484d);
+}
+
+.mm-view-container .mm-search-bar button.mm-search-btn,
+.mm-search-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 24px;
+	height: 24px;
+	padding: 0;
+	border: none;
+	border-radius: 6px;
+	background: transparent;
+	color: var(--text-muted);
+	cursor: pointer;
+	box-shadow: none;
+}
+
+.mm-search-btn:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.mm-search-btn svg {
+	width: 14px;
+	height: 14px;
+}
+
+.mm-mind-elixir-root .map-container .me-tpc.mm-search-match {
+	box-shadow: 0 0 0 2px rgba(245, 180, 0, 0.72);
+}
+
+.mm-mind-elixir-root .map-container .me-tpc.mm-search-match-active {
+	box-shadow: 0 0 0 3px var(--interactive-accent, #7c6af7), 0 0 12px rgba(245, 180, 0, 0.55);
 }
 
 .mm-mind-elixir-root .map-container .me-tpc .text {
