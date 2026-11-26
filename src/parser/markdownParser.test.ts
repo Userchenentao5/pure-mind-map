@@ -365,4 +365,79 @@ mindmap-plugin: basic
 		expect(afterDelete).toContain("## Branch A");
 		expect(afterDelete).toContain("## Branch B");
 	});
+
+	it("parses and round-trips node notes stored as Markdown blockquotes in both heading-list and pure-list modes", () => {
+		const headingMd = [
+			"---",
+			"mindmap-plugin: basic",
+			"mindmap-direction: right",
+			"---",
+			"",
+			"# 中心主题",
+			"> 根节点备注第一行",
+			">",
+			"> 根节点备注第二段",
+			"",
+			"## 分支一",
+			"> 分支一说明",
+			"> - 清单 1",
+			"> - 清单 2",
+			"- 核心观点",
+			"  > 这是长备注",
+			"  > ```ts",
+			"  > const n = 42;",
+			"  > ```",
+			"  - 子节点 1",
+			"    > 子节点备注",
+			"- 第二个节点",
+			"",
+		].join("\n");
+
+		const parsed = markdownToMindMap(headingMd);
+		expect(parsed.data.nodeData.note).toBe("根节点备注第一行\n\n根节点备注第二段");
+		const branch1 = parsed.data.nodeData.children![0];
+		expect(branch1.note).toBe("分支一说明\n- 清单 1\n- 清单 2");
+		const coreItem = branch1.children![0];
+		expect(coreItem.topic).toBe("核心观点");
+		expect(coreItem.note).toBe("这是长备注\n```ts\nconst n = 42;\n```");
+		expect(coreItem.children![0].topic).toBe("子节点 1");
+		expect(coreItem.children![0].note).toBe("子节点备注");
+		expect(branch1.children![1].topic).toBe("第二个节点");
+		expect(branch1.children![1].note).toBeUndefined();
+
+		const serialized = mindMapToMarkdown(parsed.data, {
+			existingFrontmatterRaw: parsed.frontmatter.raw,
+			style: "heading-list",
+			direction: parsed.direction,
+			preservedBlocks: parsed.preservedBlocks,
+		});
+		expect(serialized).toBe(headingMd);
+
+		// Pure list mode round-trip
+		const listMd = [
+			"---",
+			"mindmap-plugin: basic",
+			"mindmap-direction: side",
+			"---",
+			"",
+			"- Root",
+			"  > Root note",
+			"  - Child",
+			"    > Child line 1",
+			"    > Child line 2",
+			"",
+		].join("\n");
+		const listParsed = markdownToMindMap(listMd);
+		expect(listParsed.data.nodeData.note).toBe("Root note");
+		expect(listParsed.data.nodeData.children![0].note).toBe(
+			"Child line 1\nChild line 2"
+		);
+		const listOut = mindMapToMarkdown(listParsed.data, {
+			existingFrontmatterRaw: listParsed.frontmatter.raw,
+			style: "list",
+			direction: listParsed.direction,
+			preservedBlocks: listParsed.preservedBlocks,
+		});
+		expect(listOut).toBe(listMd);
+	});
 });

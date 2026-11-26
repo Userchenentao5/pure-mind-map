@@ -142,6 +142,12 @@ function createWorkspaceHarness(opts?: {
 		recenterMindMapLeaf: (leaf) => {
 			events.push(`recenter:${leaf.id}`);
 		},
+		revealSourceLine: (leaf, line) => {
+			events.push(`revealSource:${leaf.id}:${line}`);
+		},
+		revealMindMapNode: (leaf, pathKey) => {
+			events.push(`revealNode:${leaf.id}:${pathKey}`);
+		},
 		refreshUi: () => {
 			events.push("ui-refresh");
 		},
@@ -740,5 +746,82 @@ describe("WorkspaceSession", () => {
 		session.dispose();
 		await vi.advanceTimersByTimeAsync(1000);
 		expect(events.filter((e) => e.startsWith("syncToMindMap:"))).toHaveLength(0);
+	});
+
+	it("bidirectionally locates matching Source lines and Mind Map nodes in Split View without echo loops", () => {
+		const md = [
+			"---",
+			"mindmap-plugin: basic",
+			"---",
+			"",
+			"# Root",
+			"",
+			"## Branch A",
+			"- Child A1",
+			"- Child A2",
+			"",
+			"## Branch B",
+			"- Child B1",
+		].join("\n");
+
+		const mindLeaf: FakeLeaf = {
+			id: "L1",
+			kind: "mindmap",
+			filePath: "maps/a.md",
+			markdown: md,
+			dirty: false,
+			rect: { left: 0, top: 0, width: 500, height: 800 },
+		};
+		const sourceLeaf: FakeLeaf = {
+			id: "L2",
+			kind: "markdown",
+			filePath: "maps/a.md",
+			markdown: md,
+			dirty: false,
+			rect: { left: 500, top: 0, width: 500, height: 800 },
+		};
+		const standaloneMindLeaf: FakeLeaf = {
+			id: "L3",
+			kind: "mindmap",
+			filePath: "maps/b.md",
+			markdown: md,
+			dirty: false,
+			rect: { left: 0, top: 0, width: 1000, height: 800 },
+		};
+
+		const { session, events } = createWorkspaceHarness({
+			initialLeaves: [mindLeaf, sourceLeaf, standaloneMindLeaf],
+		});
+
+		// Non-split file does nothing
+		session.onMindMapNodeSelected("maps/b.md", "0.0.1", "Child A2");
+		expect(events.filter((e) => e.startsWith("revealSource:"))).toHaveLength(0);
+
+		// 1. Selecting node "0.0.1" (Child A2) in Mind Map reveals line 8 in Source Mode
+		session.onMindMapNodeSelected("maps/a.md", "0.0.1", "Child A2");
+		expect(events).toContain("revealSource:L2:8");
+
+		// Programmatic cursor echo at line 8 is suppressed (no bounce back to Mind Map)
+		session.onSourceCursorLineChanged("maps/a.md", md, 8);
+		expect(events.filter((e) => e.startsWith("revealNode:"))).toHaveLength(0);
+
+		// 2. Moving cursor to line 11 (Child B1) in Source Mode locates node "0.1.0" in Mind Map
+		session.onSourceCursorLineChanged("maps/a.md", md, 11);
+		expect(events).toContain("revealNode:L1:0.1.0");
+
+		// Staying on the same line without force deduplicates
+		const countAfterFirst = events.filter((e) =>
+			e.startsWith("revealNode:")
+		).length;
+		session.onSourceCursorLineChanged("maps/a.md", md, 11);
+		expect(
+			events.filter((e) => e.startsWith("revealNode:")).length
+		).toBe(countAfterFirst);
+
+		// Explicit click (force: true) re-locates even on the same node
+		session.onSourceCursorLineChanged("maps/a.md", md, 11, { force: true });
+		expect(
+			events.filter((e) => e.startsWith("revealNode:")).length
+		).toBe(countAfterFirst + 1);
 	});
 });

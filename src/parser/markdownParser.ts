@@ -24,12 +24,21 @@ export interface PreservedMarkdownBlock {
 	blankAfter: boolean;
 }
 
+export interface NodeLineEntry {
+	nodeId: string;
+	pathKey: string;
+	topic: string;
+	/** 0-based line number in the full Markdown file */
+	line: number;
+}
+
 export interface ParsedMindMap {
 	frontmatter: FrontmatterResult;
 	data: MindElixirData;
 	direction: MindMapDirection;
 	stylePreset?: MindMapStylePreset;
 	preservedBlocks: PreservedMarkdownBlock[];
+	nodeLines: NodeLineEntry[];
 }
 
 export interface SerializeOptions {
@@ -80,6 +89,13 @@ export function extractFrontmatter(markdown: string): FrontmatterResult {
 	}
 
 	return { raw, properties, body };
+}
+
+function getBodyStartLineOffset(markdown: string): number {
+	const normalized = markdown.replace(/^\uFEFF/, "");
+	const match = normalized.match(FRONTMATTER_REGEX);
+	if (!match) return 0;
+	return match[0].split(/\r?\n/).length - 1;
 }
 
 export function isMindMapFrontmatterValue(value: unknown): boolean {
@@ -190,6 +206,46 @@ function unescapeTopic(text: string): string {
 
 function escapeTopicForMarkdown(topic: string): string {
 	return topic.replace(/\r?\n/g, "<br>").trim() || "未命名节点";
+}
+
+export function normalizeNoteText(note: string | null | undefined): string {
+	if (!note) return "";
+	const lines = note.replace(/\r\n?/g, "\n").split("\n");
+	while (lines.length > 0 && lines[0].trim() === "") {
+		lines.shift();
+	}
+	while (lines.length > 0 && lines[lines.length - 1].trim() === "") {
+		lines.pop();
+	}
+	return lines.join("\n");
+}
+
+function appendNoteLineToNode(
+	node: NodeObj,
+	content: string,
+	separateParagraph: boolean
+): void {
+	if (node.note === undefined) {
+		node.note = content;
+		return;
+	}
+	node.note = separateParagraph
+		? `${node.note}\n\n${content}`
+		: `${node.note}\n${content}`;
+}
+
+function finalizeNodeNotes(node: NodeObj): void {
+	if (node.note !== undefined) {
+		const normalized = normalizeNoteText(node.note);
+		if (normalized) {
+			node.note = normalized;
+		} else {
+			delete node.note;
+		}
+	}
+	for (const child of node.children ?? []) {
+		finalizeNodeNotes(child);
+	}
 }
 
 type BodyToken =
@@ -388,10 +444,12 @@ export function markdownToMindMap(
 		}
 	}
 
+	const bodyStartLine = getBodyStartLineOffset(markdown);
 	const tokens = tokenizeMarkdownBody(body.split(/\r?\n/));
 	const usedIds = new Set<string>();
 	const capturedBlocks: CapturedPreservedBlock[] = [];
 	const parentMap = new WeakMap<NodeObj, NodeObj | null>();
+	const nodeLineMap = new WeakMap<NodeObj, number>();
 
 	const hasHeading = tokens.some(
 		(t) => t.kind === "line" && /^\s*#{1,6}\s+/.test(t.raw)
@@ -404,7 +462,9 @@ export function markdownToMindMap(
 			fallbackTitle,
 			usedIds,
 			capturedBlocks,
-			parentMap
+			parentMap,
+			nodeLineMap,
+			bodyStartLine
 		);
 	} else {
 		root = parsePureListBody(
@@ -412,13 +472,34 @@ export function markdownToMindMap(
 			fallbackTitle,
 			usedIds,
 			capturedBlocks,
-			parentMap
+			parentMap,
+			nodeLineMap,
+			bodyStartLine
 		);
 	}
 
 	if (extra?.nodeIds) {
 		applySavedNodeIds(root, "0", extra.nodeIds);
 	}
+	finalizeNodeNotes(root);
+
+	const nodeLines: NodeLineEntry[] = [];
+	const collectNodeLines = (node: NodeObj, pathKey: string): void => {
+		const line = nodeLineMap.get(node);
+		if (line !== undefined) {
+			nodeLines.push({
+				nodeId: node.id,
+				pathKey,
+				topic: node.topic,
+				line,
+			});
+		}
+		const children = node.children ?? [];
+		for (let i = 0; i < children.length; i++) {
+			collectNodeLines(children[i], `${pathKey}.${i}`);
+		}
+	};
+	collectNodeLines(root, "0");
 
 	const preservedBlocks: PreservedMarkdownBlock[] = capturedBlocks.map((block) => {
 		const ancestorNodeIds: string[] = [];
@@ -449,6 +530,7 @@ export function markdownToMindMap(
 		direction,
 		stylePreset,
 		preservedBlocks,
+		nodeLines,
 	};
 }
 
@@ -457,7 +539,9 @@ function parseHeadingAndListBody(
 	fallbackTitle: string,
 	usedIds: Set<string>,
 	capturedBlocks: CapturedPreservedBlock[],
-	parentMap: WeakMap<NodeObj, NodeObj | null>
+	parentMap: WeakMap<NodeObj, NodeObj | null>,
+	nodeLineMap: WeakMap<NodeObj, number>,
+	bodyStartLine: number
 ): NodeObj {
 	let root: NodeObj | null = null;
 	let isSyntheticRoot = false;
@@ -465,6 +549,7 @@ function parseHeadingAndListBody(
 	const listStack: Array<{ indent: number; node: NodeObj }> = [];
 	let currentHeadingParent: NodeObj | null = null;
 	let lastNode: NodeObj | null = null;
+	let sawBlankSinceLastNote = false;
 
 	const ensureRoot = (): NodeObj => {
 		if (!root) {
@@ -482,7 +567,10 @@ function parseHeadingAndListBody(
 	};
 
 	for (const token of tokens) {
-		if (token.kind === "blank") continue;
+		if (token.kind === "blank") {
+			sawBlankSinceLastNote = true;
+			continue;
+		}
 
 		if (token.kind === "raw-block") {
 			capturedBlocks.push({
@@ -491,11 +579,34 @@ function parseHeadingAndListBody(
 				blankBefore: token.blankBefore,
 				blankAfter: token.blankAfter,
 			});
+			sawBlankSinceLastNote = false;
 			continue;
 		}
 
 		const { raw: rawLine, lineIndex } = token;
+		const fileLine = bodyStartLine + lineIndex - 1;
 		const trimmed = rawLine.trim();
+
+		const quoteMatch = rawLine.match(/^\s*>(?:\s?(.*))?$/);
+		if (quoteMatch) {
+			if (lastNode) {
+				appendNoteLineToNode(
+					lastNode,
+					quoteMatch[1] ?? "",
+					sawBlankSinceLastNote && lastNode.note !== undefined
+				);
+			} else {
+				capturedBlocks.push({
+					raw: rawLine,
+					anchorNode: null,
+					blankBefore: false,
+					blankAfter: false,
+				});
+			}
+			sawBlankSinceLastNote = false;
+			continue;
+		}
+		sawBlankSinceLastNote = false;
 
 		const headingMatch = rawLine.match(/^\s*(#{1,6})\s+(.+?)\s*#*$/);
 		if (headingMatch) {
@@ -517,6 +628,7 @@ function parseHeadingAndListBody(
 					parentMap.set(root, null);
 					isSyntheticRoot = false;
 				}
+				nodeLineMap.set(root, fileLine);
 				headingStack.length = 0;
 				headingStack.push({ level: 1, node: root });
 				currentHeadingParent = root;
@@ -545,6 +657,7 @@ function parseHeadingAndListBody(
 			parent.children = parent.children ?? [];
 			parent.children.push(node);
 			parentMap.set(node, parent);
+			nodeLineMap.set(node, fileLine);
 
 			headingStack.push({ level, node });
 			currentHeadingParent = node;
@@ -578,6 +691,7 @@ function parseHeadingAndListBody(
 			parent.children = parent.children ?? [];
 			parent.children.push(node);
 			parentMap.set(node, parent);
+			nodeLineMap.set(node, fileLine);
 
 			listStack.push({ indent, node });
 			lastNode = node;
@@ -597,6 +711,7 @@ function parseHeadingAndListBody(
 		parent.children = parent.children ?? [];
 		parent.children.push(node);
 		parentMap.set(node, parent);
+		nodeLineMap.set(node, fileLine);
 		lastNode = node;
 	}
 
@@ -608,14 +723,20 @@ function parsePureListBody(
 	fallbackTitle: string,
 	usedIds: Set<string>,
 	capturedBlocks: CapturedPreservedBlock[],
-	parentMap: WeakMap<NodeObj, NodeObj | null>
+	parentMap: WeakMap<NodeObj, NodeObj | null>,
+	nodeLineMap: WeakMap<NodeObj, number>,
+	bodyStartLine: number
 ): NodeObj {
 	const topNodes: NodeObj[] = [];
 	const listStack: Array<{ indent: number; node: NodeObj }> = [];
 	let lastNode: NodeObj | null = null;
+	let sawBlankSinceLastNote = false;
 
 	for (const token of tokens) {
-		if (token.kind === "blank") continue;
+		if (token.kind === "blank") {
+			sawBlankSinceLastNote = true;
+			continue;
+		}
 
 		if (token.kind === "raw-block") {
 			capturedBlocks.push({
@@ -624,11 +745,34 @@ function parsePureListBody(
 				blankBefore: token.blankBefore,
 				blankAfter: token.blankAfter,
 			});
+			sawBlankSinceLastNote = false;
 			continue;
 		}
 
 		const { raw: rawLine, lineIndex } = token;
+		const fileLine = bodyStartLine + lineIndex - 1;
 		const trimmed = rawLine.trim();
+
+		const quoteMatch = rawLine.match(/^\s*>(?:\s?(.*))?$/);
+		if (quoteMatch) {
+			if (lastNode) {
+				appendNoteLineToNode(
+					lastNode,
+					quoteMatch[1] ?? "",
+					sawBlankSinceLastNote && lastNode.note !== undefined
+				);
+			} else {
+				capturedBlocks.push({
+					raw: rawLine,
+					anchorNode: null,
+					blankBefore: false,
+					blankAfter: false,
+				});
+			}
+			sawBlankSinceLastNote = false;
+			continue;
+		}
+		sawBlankSinceLastNote = false;
 
 		const listMatch = rawLine.match(/^(\s*)[-*+]\s+(.*)$/);
 		const indent = listMatch ? getIndentWidth(listMatch[1]) : 0;
@@ -656,6 +800,7 @@ function parsePureListBody(
 			parent.children.push(node);
 			parentMap.set(node, parent);
 		}
+		nodeLineMap.set(node, fileLine);
 
 		listStack.push({ indent, node });
 		lastNode = node;
@@ -758,6 +903,14 @@ class MarkdownBodyWriter {
 		}
 		this.pendingBlank = false;
 		this.lines.push(line);
+	}
+
+	public pushNoteLines(note: string | undefined, indent = ""): void {
+		const normalized = normalizeNoteText(note);
+		if (!normalized) return;
+		for (const line of normalized.split("\n")) {
+			this.lines.push(line.length > 0 ? `${indent}> ${line}` : `${indent}>`);
+		}
 	}
 
 	public pushPreservedBlocks(
@@ -907,11 +1060,13 @@ function serializeAsHeadingList(
 	blocksAfterNode: Map<string, PreservedMarkdownBlock[]>
 ): void {
 	writer.pushNodeLine(`# ${escapeTopicForMarkdown(root.topic)}`);
+	writer.pushNoteLines(root.note, "");
 	writer.pushPreservedBlocks(blocksAfterNode.get(root.id));
 
 	const mainBranches = root.children ?? [];
 	for (const branch of mainBranches) {
 		writer.pushNodeLine(`## ${escapeTopicForMarkdown(branch.topic)}`, true);
+		writer.pushNoteLines(branch.note, "");
 		writer.pushPreservedBlocks(blocksAfterNode.get(branch.id));
 		const subChildren = branch.children ?? [];
 		for (const child of subChildren) {
@@ -928,6 +1083,7 @@ function serializeAsList(
 ): void {
 	const indent = "  ".repeat(depth);
 	writer.pushNodeLine(`${indent}- ${escapeTopicForMarkdown(node.topic)}`);
+	writer.pushNoteLines(node.note, `${indent}  `);
 	writer.pushPreservedBlocks(blocksAfterNode.get(node.id));
 	const children = node.children ?? [];
 	for (const child of children) {

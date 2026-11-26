@@ -5,6 +5,8 @@ export interface NodeSearchMatch {
 	topic: string;
 	/** Ancestor node IDs ordered from root down to immediate parent */
 	ancestorIds: string[];
+	/** True when the search query matched inside the node's note rather than its topic */
+	matchedInNote?: boolean;
 }
 
 /**
@@ -54,11 +56,21 @@ export function findMatchingNodes(
 		const rawTopic = node.topic ?? "";
 		const readable = extractSearchableNodeText(rawTopic).toLowerCase();
 		const rawLower = rawTopic.toLowerCase();
-		if (readable.includes(needle) || rawLower.includes(needle)) {
+		const topicMatched = readable.includes(needle) || rawLower.includes(needle);
+
+		const rawNote = node.note ?? "";
+		const noteMatched =
+			!topicMatched &&
+			rawNote.length > 0 &&
+			(extractSearchableNodeText(rawNote).toLowerCase().includes(needle) ||
+				rawNote.toLowerCase().includes(needle));
+
+		if (topicMatched || noteMatched) {
 			matches.push({
 				nodeId: node.id,
 				topic: rawTopic,
 				ancestorIds: [...ancestors],
+				...(noteMatched ? { matchedInNote: true } : {}),
 			});
 		}
 

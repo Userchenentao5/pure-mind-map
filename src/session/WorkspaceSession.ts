@@ -1,4 +1,8 @@
 import { hasMindMapFrontmatter } from "../parser/markdownParser";
+import {
+	findMarkdownLineForNodePath,
+	findNodePathForMarkdownLine,
+} from "../parser/nodeLineMap";
 import { MINDMAP_VIEW_TYPE, type SplitLayout } from "../settings/types";
 
 export type ObsidianSplitDirection = "vertical" | "horizontal";
@@ -68,6 +72,8 @@ export interface WorkspaceSessionAdapter<TLeaf extends object> {
 	detachLeaf(leaf: TLeaf): void;
 	focusLeaf(leaf: TLeaf): void;
 	recenterMindMapLeaf(leaf: TLeaf): void;
+	revealSourceLine?(leaf: TLeaf, line: number): void;
+	revealMindMapNode?(leaf: TLeaf, pathKey: string): void;
 	refreshUi(): void;
 
 	scheduleTimer(fn: () => void, delayMs: number): SessionTimerHandle;
@@ -163,6 +169,10 @@ export class WorkspaceSession<TLeaf extends object> {
 	private pendingSourceTimers = new Map<string, SessionTimerHandle>();
 	private pendingSourceMarkdown = new Map<string, string>();
 	private pendingMindMapTimers = new Map<string, SessionTimerHandle>();
+
+	// Split View locate-sync state (echo suppression & deduplication)
+	private suppressedSourceLocateLine = new Map<string, number>();
+	private lastSyncedLocatePath = new Map<string, string>();
 
 	constructor(
 		adapter: WorkspaceSessionAdapter<TLeaf>,
@@ -766,6 +776,68 @@ export class WorkspaceSession<TLeaf extends object> {
 		return this.commitMindMapToSource(filePath);
 	}
 
+	public onMindMapNodeSelected(
+		filePath: string,
+		pathKey: string,
+		topic?: string
+	): void {
+		if (!filePath || !pathKey) return;
+		const sourceLeaves = this.findLeavesByKind(filePath, "markdown");
+		if (sourceLeaves.length === 0) return;
+
+		const markdown =
+			this.adapter.readLeafMarkdown(sourceLeaves[0]) ??
+			this.lastKnownMarkdown.get(filePath);
+		if (markdown === null || markdown === undefined) return;
+
+		const line = findMarkdownLineForNodePath(markdown, pathKey, topic);
+		if (line === null) return;
+
+		this.suppressedSourceLocateLine.set(filePath, line);
+		this.lastSyncedLocatePath.set(filePath, pathKey);
+		for (const sourceLeaf of sourceLeaves) {
+			this.adapter.revealSourceLine?.(sourceLeaf, line);
+		}
+	}
+
+	public onSourceCursorLineChanged(
+		filePath: string,
+		markdown: string,
+		cursorLine: number,
+		options?: { force?: boolean }
+	): void {
+		if (!filePath || cursorLine < 0) return;
+		if (this.applyingToSource.has(filePath)) return;
+
+		const mindMapLeaves = this.findLeavesByKind(filePath, "mindmap");
+		if (mindMapLeaves.length === 0) return;
+
+		const suppressedLine = this.suppressedSourceLocateLine.get(filePath);
+		if (suppressedLine === cursorLine) {
+			this.suppressedSourceLocateLine.delete(filePath);
+			if (!options?.force) {
+				return;
+			}
+		} else if (suppressedLine !== undefined) {
+			this.suppressedSourceLocateLine.delete(filePath);
+		}
+
+		const pathKey = findNodePathForMarkdownLine(markdown, cursorLine);
+		if (!pathKey) return;
+
+		if (
+			!options?.force &&
+			this.lastSyncedLocatePath.get(filePath) === pathKey
+		) {
+			return;
+		}
+
+		this.lastSyncedLocatePath.set(filePath, pathKey);
+		for (const mindMapLeaf of mindMapLeaves) {
+			this.adapter.revealMindMapNode?.(mindMapLeaf, pathKey);
+		}
+	}
+
 	public onActiveLeafChange(leaf: TLeaf | null): void {
 		const prev = this.lastActiveLeaf;
 		this.lastActiveLeaf = leaf;
@@ -808,6 +880,8 @@ export class WorkspaceSession<TLeaf extends object> {
 		this.lastKnownMarkdown.clear();
 		this.suppressedSourceEcho.clear();
 		this.applyingToSource.clear();
+		this.suppressedSourceLocateLine.clear();
+		this.lastSyncedLocatePath.clear();
 		this.splitSessions.clear();
 		this.lastActiveLeaf = null;
 	}

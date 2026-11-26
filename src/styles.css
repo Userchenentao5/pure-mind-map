@@ -410,6 +410,32 @@ body > div:has(> .selection-area) {
 	z-index: 100 !important;
 }
 
+/* Keep MindElixir node context menu compact, scrollable, and clamped inside the window */
+.mm-mind-elixir-root .map-container .context-menu {
+	z-index: 99;
+}
+
+.mm-mind-elixir-root .map-container .context-menu > .menu-list {
+	max-height: calc(100vh - 48px);
+	overflow-y: auto;
+	border-radius: 10px;
+	border: 1px solid var(--background-modifier-border);
+	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+}
+
+.mm-mind-elixir-root .map-container .context-menu > .menu-list > li {
+	padding: 6px 12px;
+	font-size: 13px;
+	line-height: 1.35;
+}
+
+.mm-mind-elixir-root .map-container .context-menu > .menu-list.mm-context-menu-positioned {
+	left: var(--mm-cm-left, 12px) !important;
+	top: var(--mm-cm-top, 12px) !important;
+	right: auto !important;
+	bottom: auto !important;
+}
+
 /* ============================================================
    Mind Map Style Presets (Card Logic Tree & Soft Bordered)
    ============================================================ */
@@ -549,10 +575,13 @@ body > div:has(> .selection-area) {
 	transform: translateY(1px);
 }
 
-/* Collapsed state (when not selected): visible badge showing hidden child count */
+/* Collapsed state (when not selected): visible badge showing total hidden descendant count */
 .mm-canvas-host.mm-style-card .mm-mind-elixir-root .map-container .me-parent > .me-epd:not(.minus),
 .mm-canvas-host.mm-style-bordered .mm-mind-elixir-root .map-container .me-parent > .me-epd:not(.minus) {
 	opacity: 1;
+	width: auto;
+	min-width: 20px;
+	padding: 0 5px;
 	background-color: var(--background-secondary);
 	border-color: var(--interactive-accent);
 	color: var(--interactive-accent);
@@ -699,6 +728,9 @@ body > div:has(> .selection-area) {
 
 .mm-mind-elixir-root .map-container .mm-root-collapse-btn.is-collapsed {
 	opacity: 1;
+	width: auto;
+	min-width: 20px;
+	padding: 0 5px;
 	background-color: var(--background-secondary);
 	border-color: var(--interactive-accent);
 	color: var(--interactive-accent);
@@ -949,4 +981,392 @@ body > div:has(> .selection-area) {
 	justify-content: flex-end;
 	gap: 8px;
 	margin-top: 18px;
+}
+
+/* ============================================================
+   Bottom-Left Minimap Navigation Widget
+   ============================================================ */
+.mm-minimap {
+	position: absolute;
+	left: 16px;
+	bottom: 16px;
+	z-index: 20;
+	display: flex;
+	flex-direction: column;
+	border-radius: 10px;
+	background: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.14);
+	backdrop-filter: blur(8px);
+	overflow: hidden;
+	user-select: none;
+	-webkit-user-select: none;
+}
+
+.mm-minimap-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 4px 6px 4px 10px;
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.mm-minimap.is-collapsed .mm-minimap-header {
+	padding: 4px;
+	border-bottom: none;
+}
+
+.mm-minimap.is-collapsed .mm-minimap-title,
+.mm-view-container .mm-minimap.is-collapsed button.mm-minimap-center-btn,
+.mm-minimap.is-collapsed .mm-minimap-body {
+	display: none;
+}
+
+.mm-minimap-title {
+	font-size: 11px;
+	font-weight: 500;
+	color: var(--text-muted);
+	letter-spacing: 0.02em;
+}
+
+.mm-minimap-actions {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+}
+
+.mm-view-container .mm-minimap button.mm-minimap-btn,
+.mm-minimap-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	padding: 0;
+	border: none;
+	border-radius: 6px;
+	background: transparent;
+	color: var(--text-muted);
+	cursor: pointer;
+	box-shadow: none;
+	transition: background-color 0.14s ease, color 0.14s ease;
+}
+
+.mm-minimap-btn:hover {
+	background-color: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.mm-minimap-btn svg {
+	width: 14px;
+	height: 14px;
+}
+
+.mm-minimap-body {
+	padding: 4px;
+	background: var(--background-primary);
+}
+
+.mm-minimap-canvas {
+	display: block;
+	width: 188px;
+	height: 120px;
+	border-radius: 6px;
+	cursor: grab;
+	touch-action: none;
+}
+
+.mm-minimap-canvas.is-dragging {
+	cursor: grabbing;
+}
+
+/* ============================================================
+   Node Sticky Note Badge, Hover Preview, and Floating Editor
+   ============================================================ */
+.mm-mind-elixir-root .map-container .me-tpc > .mm-node-note-badge {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	vertical-align: middle;
+	margin-left: 6px;
+	width: 18px;
+	height: 18px;
+	border-radius: 5px;
+	pointer-events: auto;
+	color: var(--interactive-accent, #7c6af7);
+	background: color-mix(in srgb, var(--interactive-accent, #7c6af7) 12%, transparent);
+	cursor: pointer;
+	transition: background-color 0.14s ease, color 0.14s ease, transform 0.12s ease;
+}
+
+.mm-mind-elixir-root .map-container .me-tpc > .mm-node-note-badge:hover {
+	background: var(--interactive-accent, #7c6af7);
+	color: var(--text-on-accent, #ffffff);
+	transform: scale(1.08);
+}
+
+.mm-mind-elixir-root .map-container .me-tpc > .mm-node-note-badge svg {
+	width: 12px;
+	height: 12px;
+	pointer-events: none;
+}
+
+.mm-mind-elixir-root .map-container .me-root .me-tpc .mm-node-note-badge {
+	color: #ffffff;
+	background: rgba(255, 255, 255, 0.22);
+}
+
+.mm-mind-elixir-root .map-container .me-root .me-tpc .mm-node-note-badge:hover {
+	background: rgba(255, 255, 255, 0.36);
+}
+
+.mm-toolbar-btn.mm-note-toolbar-btn.has-note:not(.is-active) {
+	color: var(--interactive-accent);
+}
+
+/* Floating Right-Side Note Editor / Preview Card */
+.mm-note-panel {
+	position: absolute;
+	top: 56px;
+	right: 16px;
+	bottom: 16px;
+	width: 320px;
+	max-width: calc(100% - 32px);
+	max-height: calc(100% - 72px);
+	z-index: 28;
+	display: flex;
+	flex-direction: column;
+	border-radius: 12px;
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+	overflow: hidden;
+}
+
+.mm-note-panel-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 8px 10px 8px 12px;
+	background: var(--background-secondary);
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.mm-note-panel-title-wrap {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+	flex: 1 1 auto;
+}
+
+.mm-note-panel-icon {
+	display: inline-flex;
+	align-items: center;
+	color: var(--interactive-accent);
+	flex-shrink: 0;
+}
+
+.mm-note-panel-icon svg {
+	width: 15px;
+	height: 15px;
+}
+
+.mm-note-panel-title {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--text-normal);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.mm-note-panel-actions {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	flex-shrink: 0;
+}
+
+.mm-view-container .mm-note-panel button.mm-note-panel-btn,
+.mm-view-container .mm-note-preview button.mm-note-panel-btn,
+.mm-note-panel-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 24px;
+	height: 24px;
+	padding: 0;
+	border: none;
+	border-radius: 6px;
+	background: transparent;
+	color: var(--text-muted);
+	cursor: pointer;
+	box-shadow: none;
+	transition: background-color 0.14s ease, color 0.14s ease;
+}
+
+.mm-note-panel-btn:hover {
+	background: var(--background-modifier-hover);
+	color: var(--text-normal);
+}
+
+.mm-note-panel-btn.is-active {
+	background: var(--interactive-accent);
+	color: var(--text-on-accent, #ffffff);
+}
+
+.mm-note-panel-btn.mm-note-clear-btn:hover {
+	color: var(--text-error, #e5484d);
+}
+
+.mm-note-panel-btn svg {
+	width: 14px;
+	height: 14px;
+}
+
+.mm-note-panel-body {
+	flex: 1 1 auto;
+	min-height: 160px;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+
+.mm-note-editor-host {
+	flex: 1 1 auto;
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	overflow: hidden;
+}
+
+.mm-note-native-editor {
+	flex: 1 1 auto;
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	height: 100%;
+	padding: 0;
+	overflow: hidden;
+}
+
+.mm-note-native-editor .cm-editor {
+	flex: 1 1 auto;
+	height: 100%;
+	background: transparent;
+}
+
+.mm-note-native-editor .cm-scroller {
+	padding: 10px 14px !important;
+	overflow-y: auto !important;
+	font-size: 13.5px;
+	line-height: 1.6;
+}
+
+.mm-note-native-editor .cm-content {
+	padding-bottom: 36px;
+}
+
+.mm-note-native-editor .cm-gutters {
+	display: none !important;
+}
+
+.mm-note-panel .mm-note-textarea {
+	flex: 1 1 auto;
+	width: 100%;
+	height: 100%;
+	padding: 12px;
+	border: none;
+	border-radius: 0;
+	resize: none;
+	background: transparent;
+	color: var(--text-normal);
+	font-family: var(--font-text);
+	font-size: 13.5px;
+	line-height: 1.6;
+	outline: none;
+	box-shadow: none;
+}
+
+.mm-note-panel-preview {
+	flex: 1 1 auto;
+	padding: 12px 14px;
+	overflow-y: auto;
+	font-size: 13.5px;
+	line-height: 1.6;
+	user-select: text;
+	-webkit-user-select: text;
+}
+
+.mm-note-panel-preview > :first-child,
+.mm-note-preview-body > :first-child {
+	margin-top: 0;
+}
+
+.mm-note-panel-preview > :last-child,
+.mm-note-preview-body > :last-child {
+	margin-bottom: 0;
+}
+
+.mm-note-empty-hint {
+	color: var(--text-faint);
+	font-size: 13px;
+	text-align: center;
+	padding: 24px 12px;
+}
+
+.mm-note-panel-footer {
+	padding: 6px 12px;
+	font-size: 11px;
+	color: var(--text-faint);
+	background: var(--background-secondary);
+	border-top: 1px solid var(--background-modifier-border);
+}
+
+/* Hover Preview Popover */
+.mm-note-preview {
+	position: absolute;
+	left: var(--mm-note-preview-left, 16px);
+	top: var(--mm-note-preview-top, 64px);
+	width: var(--mm-note-preview-width, 280px);
+	max-height: 260px;
+	z-index: 32;
+	display: flex;
+	flex-direction: column;
+	border-radius: 10px;
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+	overflow: hidden;
+}
+
+.mm-note-preview-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 6px;
+	padding: 5px 8px 5px 10px;
+	background: var(--background-secondary);
+	border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.mm-note-preview-title {
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--text-muted);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.mm-note-preview-body {
+	padding: 8px 10px;
+	overflow-y: auto;
+	font-size: 13px;
+	line-height: 1.55;
+	user-select: text;
+	-webkit-user-select: text;
 }
