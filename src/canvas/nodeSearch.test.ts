@@ -24,6 +24,7 @@ const SAMPLE_TREE: NodeObj = {
 		{
 			id: "b2",
 			topic: "==核心架构== #重要",
+			note: "详细设计说明：使用 [[事件总线]] 同步状态",
 			expanded: false,
 			children: [
 				{
@@ -70,6 +71,17 @@ describe("nodeSearch", () => {
 				nodeId: "c2",
 				topic: "Hidden Child Match",
 				ancestorIds: ["root", "b2"],
+			},
+		]);
+
+		// Finds matches hidden inside node notes (including wikilinks)
+		const noteHit = findMatchingNodes(SAMPLE_TREE, "事件总线");
+		expect(noteHit).toEqual([
+			{
+				nodeId: "b2",
+				topic: "==核心架构== #重要",
+				ancestorIds: ["root"],
+				matchedInNote: true,
 			},
 		]);
 	});

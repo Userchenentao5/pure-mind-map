@@ -7,7 +7,10 @@ import {
 	buildContextMenuOption,
 	buildHorizontalBracketPath,
 	buildVerticalBracketPath,
+	computeContextMenuPosition,
+	countDescendantNodes,
 	createCanvasRelinkScheduler,
+	formatDescendantCountBadge,
 	formatHotkeyForDisplay,
 	isImageEventTarget,
 	normalizeHotkeyKey,
@@ -222,5 +225,59 @@ describe("canvasConfig", () => {
 		expect(buildCenterBezierPath(100, 50, 200, 110)).toBe(
 			"M 100 50 C 150 50 150 110 200 110"
 		);
+	});
+
+	it("counts all recursive descendants and formats large badge counts cleanly", () => {
+		expect(countDescendantNodes(null)).toBe(0);
+		expect(countDescendantNodes({ id: "leaf", topic: "Leaf", children: [] })).toBe(
+			0
+		);
+		expect(
+			countDescendantNodes({
+				id: "n1",
+				topic: "新节点",
+				children: [
+					{
+						id: "n2",
+						topic: "烦烦烦",
+						children: [
+							{ id: "n3", topic: "新节点", children: [] },
+							{ id: "n4", topic: "新节点", children: [] },
+						],
+					},
+					{ id: "n5", topic: "新节点", children: [] },
+				],
+			})
+		).toBe(4);
+		expect(formatDescendantCountBadge(4)).toBe("4");
+		expect(formatDescendantCountBadge(99)).toBe("99");
+		expect(formatDescendantCountBadge(100)).toBe("99+");
+	});
+
+	it("flips and clamps context menu position inside the mind map container bounds", () => {
+		// Near bottom edge -> flips upward so bottom items are never clipped
+		const bottomFlip = computeContextMenuPosition({
+			clickX: 300,
+			clickY: 500,
+			menuWidth: 200,
+			menuHeight: 340,
+			containerWidth: 800,
+			containerHeight: 600,
+		});
+		expect(bottomFlip.top).toBe(152);
+		expect(bottomFlip.top + 340).toBeLessThanOrEqual(600 - 12);
+		expect(bottomFlip.left).toBe(308);
+
+		// Middle of short container -> clamps safely inside [margin, containerHeight - menuHeight - margin]
+		const clamped = computeContextMenuPosition({
+			clickX: 750,
+			clickY: 220,
+			menuWidth: 200,
+			menuHeight: 340,
+			containerWidth: 800,
+			containerHeight: 400,
+		});
+		expect(clamped.top).toBe(12);
+		expect(clamped.left).toBe(542);
 	});
 });

@@ -298,6 +298,27 @@ export default class SimpleMindMapPlugin extends Plugin {
 					leaf.view.recenterCanvas();
 				}
 			},
+			revealSourceLine: (leaf, line) => {
+				if (!(leaf.view instanceof MarkdownView)) return;
+				const editor = leaf.view.editor;
+				const lineCount = editor.lineCount();
+				if (lineCount <= 0) return;
+				const clampedLine = Math.max(0, Math.min(line, lineCount - 1));
+				const lineText = editor.getLine(clampedLine) ?? "";
+				editor.setCursor({ line: clampedLine, ch: 0 });
+				editor.scrollIntoView(
+					{
+						from: { line: clampedLine, ch: 0 },
+						to: { line: clampedLine, ch: lineText.length },
+					},
+					true
+				);
+			},
+			revealMindMapNode: (leaf, pathKey) => {
+				if (leaf.view instanceof MindMapView) {
+					leaf.view.revealNodeByPathKey(pathKey);
+				}
+			},
 			refreshUi: () => {
 				this.refreshSplitUi();
 			},
@@ -342,6 +363,7 @@ export default class SimpleMindMapPlugin extends Plugin {
 	private registerWorkspaceListeners(): void {
 		this.registerEvent(
 			this.app.workspace.on("editor-change", (editor, info) => {
+				if (!(info instanceof MarkdownView)) return;
 				const filePath = info.file?.path;
 				if (!filePath) return;
 				this.session.onSourceEditorChange(filePath, editor.getValue());
@@ -374,6 +396,37 @@ export default class SimpleMindMapPlugin extends Plugin {
 					}
 				});
 			})
+		);
+
+		this.registerDomEvent(window, "mouseup", (evt: MouseEvent) => {
+			const target = evt.target as HTMLElement | null;
+			if (!target?.closest?.(".markdown-source-view")) return;
+			if (target.closest(".mm-note-panel")) return;
+			queueMicrotask(() => this.syncActiveSourceCursorToMindMap(true));
+		});
+
+		this.registerDomEvent(window, "keyup", (evt: KeyboardEvent) => {
+			const target = evt.target as HTMLElement | null;
+			if (!target?.closest?.(".markdown-source-view")) return;
+			if (target.closest(".mm-note-panel")) return;
+			queueMicrotask(() => this.syncActiveSourceCursorToMindMap(false));
+		});
+	}
+
+	private syncActiveSourceCursorToMindMap(force: boolean): void {
+		const activeLeaf = this.app.workspace.getMostRecentLeaf();
+		if (!activeLeaf || !(activeLeaf.view instanceof MarkdownView)) return;
+		const filePath = activeLeaf.view.file?.path;
+		if (!filePath) return;
+		if (!this.session.getSplitState(activeLeaf).isActive) return;
+
+		const editor = activeLeaf.view.editor;
+		const cursor = editor.getCursor();
+		this.session.onSourceCursorLineChanged(
+			filePath,
+			editor.getValue(),
+			cursor.line,
+			{ force }
 		);
 	}
 
@@ -684,6 +737,19 @@ export default class SimpleMindMapPlugin extends Plugin {
 				if (!view) return false;
 				if (!checking) {
 					view.openNodeSearch();
+				}
+				return true;
+			},
+		});
+
+		this.addCommand({
+			id: "edit-mind-map-node-note",
+			name: "编辑选中节点备注 (Edit selected node note)",
+			checkCallback: (checking) => {
+				const view = this.app.workspace.getActiveViewOfType(MindMapView);
+				if (!view) return false;
+				if (!checking) {
+					view.openNodeNoteEditor();
 				}
 				return true;
 			},

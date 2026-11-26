@@ -15,6 +15,10 @@ import type SimpleMindMapPlugin from "../main";
 import { MindMapDocument } from "../parser/MindMapDocument";
 import { renderNodeMarkdown } from "../parser/markdownParser";
 import {
+	findNodePathKeyById,
+	resolveNodeByPathKey,
+} from "../parser/nodeLineMap";
+import {
 	MINDMAP_ICON_ID,
 	MINDMAP_VIEW_TYPE,
 	SPLIT_LEFT_RIGHT_ICON_ID,
@@ -33,7 +37,10 @@ import {
 	buildCanvasKeypressOptions,
 	buildCanvasTheme,
 	buildContextMenuOption,
+	computeContextMenuPosition,
+	countDescendantNodes,
 	createCanvasRelinkScheduler,
+	formatDescendantCountBadge,
 	isImageEventTarget,
 	type CanvasRelinkScheduler,
 } from "../canvas/canvasConfig";
@@ -42,6 +49,8 @@ import {
 	stepSearchMatchIndex,
 	type NodeSearchMatch,
 } from "../canvas/nodeSearch";
+import { MindMapMinimap } from "../canvas/MindMapMinimap";
+import { NodeNoteController } from "../canvas/NodeNoteController";
 
 export class MindMapView extends TextFileView {
 	private plugin: SimpleMindMapPlugin;
@@ -50,12 +59,15 @@ export class MindMapView extends TextFileView {
 	private toolbarEl: HTMLElement | null = null;
 	private document: MindMapDocument;
 	private isInternalRefresh = false;
+	private isExternalSelectionSync = false;
 	private mountedHotkeysKey = "";
 	private splitHeaderActionEl: HTMLElement | null = null;
 	private swapSplitHeaderActionEl: HTMLElement | null = null;
 	private switchToSourceHeaderActionEl: HTMLElement | null = null;
 	private inlineEditor: NodeInlineEditor;
 	private exporter: MindMapExporter;
+	private minimap: MindMapMinimap;
+	private noteController: NodeNoteController;
 	private relinkScheduler: CanvasRelinkScheduler;
 	private nodesResizeObserver: ResizeObserver | null = null;
 	private quickAddBtnEl: HTMLButtonElement | null = null;
@@ -82,6 +94,24 @@ export class MindMapView extends TextFileView {
 			onRelinkNeeded: () => this.relinkScheduler.schedule(),
 		});
 		this.exporter = new MindMapExporter(this.app);
+		this.minimap = new MindMapMinimap({
+			getMind: () => this.mind,
+			onRecenter: () => this.recenterCanvas(),
+		});
+		this.noteController = new NodeNoteController(this.app, {
+			getMind: () => this.mind,
+			getSourcePath: () => this.file?.path ?? "",
+			onNoteChanged: () => {
+				this.markLocalEditAndScheduleSave();
+			},
+			onLayoutChanged: () => {
+				this.relinkScheduler.schedule();
+				this.minimap.scheduleRender();
+			},
+			onPanelStateChanged: () => {
+				this.updateNoteToolbarButton();
+			},
+		});
 		this.relinkScheduler = createCanvasRelinkScheduler({
 			isReady: () => this.isCanvasLayoutReady(),
 			linkDiv: () => {
@@ -140,6 +170,8 @@ export class MindMapView extends TextFileView {
 		this.toolbarEl = this.contentEl.createDiv({ cls: "mm-floating-toolbar" });
 		this.buildToolbar(this.toolbarEl);
 		this.buildSearchBar(this.contentEl);
+		this.minimap.attach(this.contentEl);
+		this.noteController.attach(this.contentEl);
 
 		this.registerDomEvent(
 			window,
@@ -185,6 +217,8 @@ export class MindMapView extends TextFileView {
 
 	async onClose(): Promise<void> {
 		this.closeNodeSearch(false);
+		this.noteController.detach();
+		this.minimap.detach();
 		this.inlineEditor.detach();
 		this.destroyMindMap();
 	}
@@ -255,13 +289,17 @@ export class MindMapView extends TextFileView {
 			}
 			this.syncCollapseBadges(this.mind);
 			this.updateQuickAddButton(this.mind);
+			this.noteController.onExternalRefresh(this.mind);
+			this.updateNoteToolbarButton();
 			this.updateDirectionButtons();
+			this.minimap.scheduleRender();
 		}
 		this.refreshSplitButtons();
 	}
 
 	clear(): void {
 		this.closeNodeSearch(false);
+		this.noteController.close(false);
 		this.document.clear(
 			this.plugin.settings.defaultDirection,
 			this.plugin.settings.defaultStylePreset
@@ -279,8 +317,45 @@ export class MindMapView extends TextFileView {
 		window.requestAnimationFrame(() => {
 			if (this.mind === mind) {
 				mind.toCenter();
+				this.minimap.scheduleRender();
 			}
 		});
+	}
+
+	public revealNodeByPathKey(pathKey: string): void {
+		const mind = this.mind;
+		if (!mind || !pathKey) return;
+		const resolved = resolveNodeByPathKey(mind.getData().nodeData, pathKey);
+		if (!resolved) return;
+
+		this.isExternalSelectionSync = true;
+		try {
+			if (this.isRootCollapsed && resolved.ancestorIds.length > 0) {
+				this.setRootCollapsed(mind, false);
+			}
+			for (const ancestorId of resolved.ancestorIds) {
+				try {
+					const ancestorEl = mind.findEle(ancestorId);
+					if (ancestorEl && ancestorEl.nodeObj.expanded === false) {
+						mind.expandNode(ancestorEl, true, { silent: true });
+					}
+				} catch {
+					// Ignore unmounted ancestor
+				}
+			}
+			const targetEl = mind.findEle(resolved.node.id);
+			if (targetEl) {
+				mind.selectNode(targetEl);
+				mind.scrollIntoView(targetEl);
+			}
+		} catch {
+			// Ignore if target node is not mounted (e.g. focus mode)
+		} finally {
+			this.isExternalSelectionSync = false;
+		}
+		this.syncCollapseBadges(mind);
+		this.updateQuickAddButton(mind);
+		this.minimap.scheduleRender();
 	}
 
 	public refreshSplitButtons(): void {
@@ -379,6 +454,17 @@ export class MindMapView extends TextFileView {
 
 	public commitActiveEdit(): void {
 		this.inlineEditor.commitActiveEdit();
+		this.noteController.flushPendingSave();
+	}
+
+	public openNodeNoteEditor(): void {
+		const contextMenu =
+			this.mind?.container?.querySelector<HTMLElement>(".context-menu");
+		if (contextMenu) {
+			contextMenu.hidden = true;
+		}
+		this.inlineEditor.commitActiveEdit();
+		this.noteController.openForSelectedNode();
 	}
 
 	public openInsertNoteModal(): void {
@@ -422,7 +508,10 @@ export class MindMapView extends TextFileView {
 			return;
 		}
 		const activeView = this.app.workspace.getActiveViewOfType(MindMapView);
-		const target = evt.target as Node | null;
+		const target = evt.target as HTMLElement | null;
+		if (target?.closest?.(".mm-note-panel")) {
+			return;
+		}
 		const isInsideThisView = Boolean(target && this.contentEl.contains(target));
 		if (activeView !== this && !isInsideThisView) {
 			return;
@@ -650,6 +739,7 @@ export class MindMapView extends TextFileView {
 		this.clearSearchHighlights();
 		this.searchMatches = [];
 		this.searchActiveIndex = -1;
+		this.minimap.unbindMind();
 		this.relinkScheduler.cancel();
 		if (this.nodesResizeObserver) {
 			this.nodesResizeObserver.disconnect();
@@ -724,7 +814,8 @@ export class MindMapView extends TextFileView {
 			direction: directionToCode(this.document.direction),
 			editable: true,
 			contextMenu: buildContextMenuOption(
-				this.plugin.settings.contextMenuLanguage
+				this.plugin.settings.contextMenuLanguage,
+				() => this.openNodeNoteEditor()
 			),
 			toolBar: false,
 			allowUndo: true,
@@ -758,7 +849,10 @@ export class MindMapView extends TextFileView {
 		this.setupQuickAddButton(mind);
 		this.setupRootCollapseButton(mind);
 		this.syncCollapseBadges(mind);
+		this.noteController.syncBadges(mind);
+		this.updateNoteToolbarButton();
 		this.observeNodesLayout(mind);
+		this.minimap.bindMind(mind);
 		this.updateDirectionButtons();
 
 		// Wait one frame for layout metrics before linking and centering
@@ -768,8 +862,10 @@ export class MindMapView extends TextFileView {
 					mind.linkDiv();
 				}
 				this.syncCollapseBadges(mind);
+				this.noteController.syncBadges(mind);
 				this.updateQuickAddButton(mind);
 				mind.toCenter();
+				this.minimap.scheduleRender();
 			}
 		});
 
@@ -781,16 +877,37 @@ export class MindMapView extends TextFileView {
 
 		mind.bus.addListener("selectNewNode", () => {
 			this.updateQuickAddButton(mind);
+			this.noteController.onCanvasSelectionChanged(mind);
+			this.updateNoteToolbarButton();
+			this.minimap.scheduleRender();
+			this.notifyMindMapSelection(mind);
 		});
 		mind.bus.addListener("selectNodes", () => {
 			this.updateQuickAddButton(mind);
+			this.noteController.onCanvasSelectionChanged(mind);
+			this.updateNoteToolbarButton();
+			this.minimap.scheduleRender();
+			this.notifyMindMapSelection(mind);
 		});
 		mind.bus.addListener("unselectNodes", () => {
 			this.updateQuickAddButton(mind);
+			this.updateNoteToolbarButton();
+			this.minimap.scheduleRender();
+		});
+		mind.bus.addListener("move", () => {
+			this.minimap.scheduleRender();
+		});
+		mind.bus.addListener("scale", () => {
+			this.minimap.scheduleRender();
 		});
 		mind.bus.addListener("linkDiv", () => {
 			this.syncCollapseBadges(mind);
+			this.noteController.syncBadges(mind);
 			this.updateQuickAddButton(mind);
+			this.minimap.scheduleRender();
+		});
+		mind.bus.addListener("showContextMenu", (evt) => {
+			this.repositionContextMenu(mind, evt);
 		});
 
 		mind.bus.addListener("operation", (op) => {
@@ -808,7 +925,10 @@ export class MindMapView extends TextFileView {
 			queueMicrotask(() => {
 				if (this.mind === mind) {
 					this.syncCollapseBadges(mind);
+					this.noteController.syncBadges(mind);
 					this.updateQuickAddButton(mind);
+					this.updateNoteToolbarButton();
+					this.minimap.scheduleRender();
 				}
 			});
 			this.markLocalEditAndScheduleSave();
@@ -819,15 +939,63 @@ export class MindMapView extends TextFileView {
 			this.document.setDirection(codeToDirection(dir));
 			this.updateDirectionButtons();
 			this.updateQuickAddButton(mind);
+			this.minimap.scheduleRender();
 			this.markLocalEditAndScheduleSave();
 		});
 
 		mind.bus.addListener("refresh", () => {
 			if (this.isInternalRefresh) return;
 			this.syncCollapseBadges(mind);
+			this.noteController.onExternalRefresh(mind);
 			this.updateQuickAddButton(mind);
+			this.updateNoteToolbarButton();
+			this.minimap.scheduleRender();
 			this.markLocalEditAndScheduleSave();
 		});
+	}
+
+	private repositionContextMenu(mind: MindElixir, evt: MouseEvent): void {
+		const overlay = mind.container?.querySelector<HTMLElement>(".context-menu");
+		const menuList = overlay?.querySelector<HTMLElement>(":scope > .menu-list");
+		if (!overlay || !menuList) return;
+
+		const win = menuList.ownerDocument.defaultView ?? window;
+		const overlayRect = overlay.getBoundingClientRect();
+		const menuRect = menuList.getBoundingClientRect();
+		const availWidth = Math.max(
+			200,
+			Math.min(overlayRect.width, win.innerWidth - overlayRect.left)
+		);
+		const availHeight = Math.max(
+			200,
+			Math.min(overlayRect.height, win.innerHeight - 28 - overlayRect.top)
+		);
+		const pos = computeContextMenuPosition({
+			clickX: evt.clientX - overlayRect.left,
+			clickY: evt.clientY - overlayRect.top,
+			menuWidth: menuRect.width || menuList.offsetWidth,
+			menuHeight: menuRect.height || menuList.offsetHeight,
+			containerWidth: availWidth,
+			containerHeight: availHeight,
+			margin: 12,
+		});
+
+		menuList.addClass("mm-context-menu-positioned");
+		menuList.setCssProps({
+			"--mm-cm-left": `${pos.left}px`,
+			"--mm-cm-top": `${pos.top}px`,
+		});
+	}
+
+	private notifyMindMapSelection(mind: MindElixir): void {
+		if (this.isInternalRefresh || this.isExternalSelectionSync) return;
+		const filePath = this.file?.path;
+		if (!filePath) return;
+		if (mind.currentNodes.length !== 1 || !mind.currentNode) return;
+		const nodeObj = mind.currentNode.nodeObj;
+		const pathKey = findNodePathKeyById(mind.getData().nodeData, nodeObj.id);
+		if (!pathKey) return;
+		this.plugin.session.onMindMapNodeSelected(filePath, pathKey, nodeObj.topic);
 	}
 
 	private applyStylePresetClass(): void {
@@ -952,6 +1120,7 @@ export class MindMapView extends TextFileView {
 
 		this.syncCollapseBadges(mind);
 		this.updateQuickAddButton(mind);
+		this.minimap.scheduleRender();
 	}
 
 	private hideQuickAddButton(): void {
@@ -963,7 +1132,7 @@ export class MindMapView extends TextFileView {
 		const btn = this.rootCollapseBtnEl;
 		if (!btn || this.mind !== mind) return;
 
-		const childCount = mind.nodeData?.children?.length ?? 0;
+		const childCount = countDescendantNodes(mind.nodeData);
 		const rootTpc = mind.nodes.querySelector<HTMLElement>(".me-root > .me-tpc");
 		const isRootSelected = Boolean(
 			mind.currentNodes.length === 1 &&
@@ -1021,11 +1190,11 @@ export class MindMapView extends TextFileView {
 			dirAttr = "right";
 		}
 
-		btn.dataset.childCount = String(childCount);
+		btn.dataset.childCount = formatDescendantCountBadge(childCount);
 		btn.dataset.dir = dirAttr;
 		btn.toggleClass("is-collapsed", this.isRootCollapsed);
 		const title = this.isRootCollapsed
-			? `展开 ${childCount} 个分支`
+			? `展开 ${childCount} 个子节点`
 			: "收起子节点";
 		btn.setAttribute("title", title);
 		btn.setAttribute("aria-label", title);
@@ -1109,8 +1278,8 @@ export class MindMapView extends TextFileView {
 		expanders.forEach((epd) => {
 			const parentEl = epd.parentElement;
 			const tpc = parentEl?.firstElementChild as Topic | null;
-			const count = tpc?.nodeObj?.children?.length ?? 0;
-			epd.dataset.childCount = String(count);
+			const count = countDescendantNodes(tpc?.nodeObj);
+			epd.dataset.childCount = formatDescendantCountBadge(count);
 			const isExpanded = epd.classList.contains("minus");
 			const title = isExpanded
 				? "收起子节点"
@@ -1140,6 +1309,7 @@ export class MindMapView extends TextFileView {
 	private applyCurrentTheme(): void {
 		if (!this.mind) return;
 		this.mind.changeTheme(this.buildObsidianTheme(), false);
+		this.minimap.scheduleRender();
 	}
 
 	private resolveVaultImageUrl(target: string): string | null {
@@ -1284,6 +1454,14 @@ export class MindMapView extends TextFileView {
 		addBtn("image-plus", "在选中节点插入图片", () => {
 			this.openInsertImageModal();
 		});
+		addBtn(
+			"sticky-note",
+			"添加/编辑节点备注",
+			() => {
+				this.noteController.toggleForSelectedNode();
+			},
+			"mm-note-toolbar-btn"
+		);
 
 		addDivider();
 
@@ -1416,6 +1594,15 @@ export class MindMapView extends TextFileView {
 			`.mm-dir-${this.document.direction}`
 		);
 		activeBtn?.addClass("is-active");
+	}
+
+	private updateNoteToolbarButton(): void {
+		if (!this.toolbarEl) return;
+		const btn = this.toolbarEl.querySelector<HTMLElement>(".mm-note-toolbar-btn");
+		if (!btn) return;
+		const hasNote = Boolean(this.mind?.currentNode?.nodeObj?.note?.trim());
+		btn.toggleClass("is-active", this.noteController.isOpen());
+		btn.toggleClass("has-note", hasNote);
 	}
 
 	public openExportModal(initialFormat?: ExportFormat): void {

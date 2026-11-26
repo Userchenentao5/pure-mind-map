@@ -3,6 +3,7 @@ import {
 	THEME,
 	type KeypressOptions,
 	type MainLineParams,
+	type NodeObj,
 	type Options,
 	type SubLineParams,
 	type Theme,
@@ -259,17 +260,83 @@ const CONTEXT_MENU_LOCALES: Record<ContextMenuLanguage, ContextMenuLocale> = {
 	},
 };
 
+const CONTEXT_MENU_NOTE_LABELS: Record<ContextMenuLanguage, string> = {
+	"zh-CN": "编辑备注",
+	"zh-TW": "編輯備註",
+	en: "Edit note",
+	ja: "メモを編集",
+	ko: "메모 편집",
+};
+
 export function buildContextMenuOption(
-	language: ContextMenuLanguage | undefined
+	language: ContextMenuLanguage | undefined,
+	onEditNote?: () => void
 ): CanvasContextMenuOption {
-	const locale =
-		(language && CONTEXT_MENU_LOCALES[language]) ||
-		CONTEXT_MENU_LOCALES["zh-CN"];
+	const resolvedLang: ContextMenuLanguage =
+		language && language in CONTEXT_MENU_LOCALES ? language : "zh-CN";
+	const locale = CONTEXT_MENU_LOCALES[resolvedLang];
 	return {
 		focus: true,
 		link: true,
 		locale,
+		...(onEditNote
+			? {
+					extend: [
+						{
+							name: CONTEXT_MENU_NOTE_LABELS[resolvedLang],
+							onclick: () => {
+								onEditNote();
+							},
+						},
+					],
+				}
+			: {}),
 	};
+}
+
+export function countDescendantNodes(node: NodeObj | null | undefined): number {
+	if (!node?.children?.length) return 0;
+	let total = 0;
+	for (const child of node.children) {
+		total += 1 + countDescendantNodes(child);
+	}
+	return total;
+}
+
+export function formatDescendantCountBadge(count: number): string {
+	return count > 99 ? "99+" : String(count);
+}
+
+/**
+ * Computes clamped (left, top) coordinates for a context menu relative to its
+ * host container so it flips upward/leftward near edges and never clips off-screen.
+ */
+export function computeContextMenuPosition(params: {
+	clickX: number;
+	clickY: number;
+	menuWidth: number;
+	menuHeight: number;
+	containerWidth: number;
+	containerHeight: number;
+	margin?: number;
+}): { left: number; top: number } {
+	const margin = params.margin ?? 12;
+	const { clickX, clickY, menuWidth, menuHeight, containerWidth, containerHeight } =
+		params;
+
+	let left = clickX + 8;
+	if (left + menuWidth > containerWidth - margin) {
+		left = clickX - menuWidth - 8;
+	}
+	left = Math.max(margin, Math.min(left, containerWidth - menuWidth - margin));
+
+	let top = clickY + 8;
+	if (top + menuHeight > containerHeight - margin) {
+		top = clickY - menuHeight - 8;
+	}
+	top = Math.max(margin, Math.min(top, containerHeight - menuHeight - margin));
+
+	return { left: Math.round(left), top: Math.round(top) };
 }
 
 export interface CanvasRelinkHost {
