@@ -59,6 +59,11 @@ export interface StandaloneSvgSource {
 	serializedHostHtml: string;
 }
 
+export interface RenderedRasterBlob {
+	readonly type: string;
+	arrayBuffer(): Promise<ArrayBuffer>;
+}
+
 export type RenderedExportPayload =
 	| { kind: "svg"; svgText: string; mimeType: string }
 	| { kind: "raster"; data: ArrayBuffer; mimeType: string };
@@ -85,11 +90,11 @@ export interface ExportPipelineRequest<TMind> {
 
 export interface MindMapExportAdapter<TMind> {
 	renderSvgSource(mind: TMind): Promise<StandaloneSvgSource>;
-	renderRasterBytes(
+	renderRasterBlob(
 		mind: TMind,
 		format: Exclude<ExportFormat, "svg">,
 		options: { scale: number; quality: number }
-	): Promise<ArrayBuffer>;
+	): Promise<RenderedRasterBlob>;
 	normalizeVaultPath(path: string): string;
 	vaultPathExists(path: string): boolean;
 	ensureVaultFolder(folderPath: string): Promise<void>;
@@ -131,6 +136,37 @@ function assembleStandaloneSvg(params: StandaloneSvgSource): string {
 
 function isAbortError(err: unknown): boolean {
 	return err instanceof Error && err.name === "AbortError";
+}
+
+function normalizeMimeType(mimeType: string): string {
+	return mimeType.split(";", 1)[0].trim().toLowerCase();
+}
+
+function formatUnsupportedEncodingMessage(
+	format: Exclude<ExportFormat, "svg">
+): string {
+	if (format === "webp") {
+		return "当前环境不支持 WebP 编码，请改用 PNG";
+	}
+	if (format === "jpeg") {
+		return "当前环境不支持 JPEG 编码，请改用 PNG";
+	}
+	return "当前环境不支持 PNG 编码";
+}
+
+class UnsupportedExportEncodingError extends Error {
+	public readonly userMessage: string;
+
+	constructor(
+		requestedFormat: Exclude<ExportFormat, "svg">,
+		actualMimeType: string
+	) {
+		super(
+			`Requested ${getExportFormatMeta(requestedFormat).mimeType}, but encoder produced ${actualMimeType || "unknown"}`
+		);
+		this.name = "UnsupportedExportEncodingError";
+		this.userMessage = formatUnsupportedEncodingMessage(requestedFormat);
+	}
 }
 
 /**
@@ -181,6 +217,10 @@ export class MindMapExportPipeline<TMind> {
 			if (isAbortError(err)) {
 				return null;
 			}
+			if (err instanceof UnsupportedExportEncodingError) {
+				this.adapter.notify(err.userMessage);
+				return null;
+			}
 			this.adapter.logError(
 				`[PureMindMap] ${meta.format} export failed:`,
 				err
@@ -206,10 +246,16 @@ export class MindMapExportPipeline<TMind> {
 			};
 		}
 
-		const bytes = await this.adapter.renderRasterBytes(mind, meta.format, {
+		const blob = await this.adapter.renderRasterBlob(mind, meta.format, {
 			scale: scale || 2,
 			quality: meta.format === "png" ? 1 : 0.92,
 		});
+		const actualMimeType = normalizeMimeType(blob.type);
+		if (actualMimeType !== meta.mimeType) {
+			throw new UnsupportedExportEncodingError(meta.format, actualMimeType);
+		}
+
+		const bytes = await blob.arrayBuffer();
 		return {
 			kind: "raster",
 			data: bytes,

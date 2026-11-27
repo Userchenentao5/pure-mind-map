@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	allocateUniqueVaultPath,
 	resolveDefaultVaultFolder,
@@ -6,11 +6,20 @@ import {
 import {
 	MindMapExportPipeline,
 	getExportFormatMeta,
+	type ExportFormat,
 	type LocalSaveOutcome,
 	type MindMapExportAdapter,
 	type RenderedExportPayload,
+	type RenderedRasterBlob,
 	type StandaloneSvgSource,
 } from "./MindMapExportPipeline";
+
+const PNG_SIGNATURE = new Uint8Array([
+	0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+]);
+const WEBP_SIGNATURE = new Uint8Array([
+	0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50,
+]);
 
 function createExportHarness(opts?: {
 	existingPaths?: string[];
@@ -18,6 +27,10 @@ function createExportHarness(opts?: {
 	throwOnRender?: Error;
 	throwOnLocalSave?: Error;
 	svgSource?: Partial<StandaloneSvgSource>;
+	rasterBlobFactory?: (
+		format: Exclude<ExportFormat, "svg">,
+		options: { scale: number; quality: number }
+	) => RenderedRasterBlob;
 }) {
 	const existing = new Set(opts?.existingPaths ?? []);
 	const createdFolders: string[] = [];
@@ -27,6 +40,7 @@ function createExportHarness(opts?: {
 		payload: RenderedExportPayload;
 		suggestedName: string;
 		extension: string;
+		mimeType: string;
 	}> = [];
 	const rasterCalls: Array<{
 		format: string;
@@ -47,10 +61,15 @@ function createExportHarness(opts?: {
 					opts?.svgSource?.serializedHostHtml ?? "<div>Mind Map</div>",
 			};
 		},
-		renderRasterBytes: async (_mind, format, options) => {
+		renderRasterBlob: async (_mind, format, options) => {
 			if (opts?.throwOnRender) throw opts.throwOnRender;
 			rasterCalls.push({ format, ...options });
-			return new Uint8Array([1, 2, 3]).buffer;
+			if (opts?.rasterBlobFactory) {
+				return opts.rasterBlobFactory(format, options);
+			}
+			return new Blob([new Uint8Array([1, 2, 3])], {
+				type: getExportFormatMeta(format).mimeType,
+			});
 		},
 		normalizeVaultPath: (p) => p.replace(/\\/g, "/").replace(/^\/+|\/+$/g, ""),
 		vaultPathExists: (p) => existing.has(p),
@@ -72,7 +91,12 @@ function createExportHarness(opts?: {
 			meta
 		): Promise<LocalSaveOutcome> => {
 			if (opts?.throwOnLocalSave) throw opts.throwOnLocalSave;
-			localSaves.push({ payload, suggestedName, extension: meta.extension });
+			localSaves.push({
+				payload,
+				suggestedName,
+				extension: meta.extension,
+				mimeType: meta.mimeType,
+			});
 			return {
 				method: opts?.localMethod ?? "picker",
 				savedName: suggestedName,
@@ -217,6 +241,185 @@ describe("MindMapExportPipeline", () => {
 		expect(failResult).toBeNull();
 		expect(failHarness.errors).toHaveLength(1);
 		expect(failHarness.notices).toContain("导出 PNG 失败：Canvas tainted");
+	});
+
+	it("aborts WebP vault and local exports before reading bytes when canvas falls back to PNG", async () => {
+		const readBytesVault = vi.fn(async () => PNG_SIGNATURE.slice().buffer);
+		const vaultHarness = createExportHarness({
+			rasterBlobFactory: () => ({
+				type: "image/png",
+				arrayBuffer: readBytesVault,
+			}),
+		});
+
+		const vaultResult = await vaultHarness.pipeline.exportMindMap({
+			mind: { id: "m1" },
+			sourceBasename: "mind-map",
+			format: "webp",
+			destination: "vault",
+			vaultFolder: "Exports",
+			scale: 2,
+		});
+
+		expect(vaultResult).toBeNull();
+		expect(readBytesVault).not.toHaveBeenCalled();
+		expect(vaultHarness.createdFolders).toEqual([]);
+		expect(vaultHarness.binaryWrites.size).toBe(0);
+		expect(vaultHarness.textWrites.size).toBe(0);
+		expect(vaultHarness.errors).toHaveLength(0);
+		expect(vaultHarness.notices).toEqual([
+			"正在生成 WEBP 图片...",
+			"当前环境不支持 WebP 编码，请改用 PNG",
+		]);
+
+		const readBytesLocal = vi.fn(async () => PNG_SIGNATURE.slice().buffer);
+		const localHarness = createExportHarness({
+			localMethod: "picker",
+			rasterBlobFactory: () => ({
+				type: "image/png",
+				arrayBuffer: readBytesLocal,
+			}),
+		});
+
+		const localResult = await localHarness.pipeline.exportMindMap({
+			mind: { id: "m1" },
+			sourceBasename: "mind-map",
+			format: "webp",
+			destination: "local",
+			scale: 2,
+		});
+
+		expect(localResult).toBeNull();
+		expect(readBytesLocal).not.toHaveBeenCalled();
+		expect(localHarness.localSaves).toHaveLength(0);
+		expect(localHarness.binaryWrites.size).toBe(0);
+		expect(localHarness.errors).toHaveLength(0);
+		expect(localHarness.notices).toEqual([
+			"正在生成 WEBP 图片...",
+			"当前环境不支持 WebP 编码，请改用 PNG",
+		]);
+	});
+
+	it("rejects empty or mismatched MIME types and guides JPEG fallback to PNG", async () => {
+		const readBytesEmpty = vi.fn(async () => PNG_SIGNATURE.slice().buffer);
+		const emptyTypeHarness = createExportHarness({
+			rasterBlobFactory: () => ({
+				type: "",
+				arrayBuffer: readBytesEmpty,
+			}),
+		});
+
+		const emptyResult = await emptyTypeHarness.pipeline.exportMindMap({
+			mind: { id: "m1" },
+			sourceBasename: "mind-map",
+			format: "webp",
+			destination: "vault",
+			vaultFolder: "",
+			scale: 2,
+		});
+		expect(emptyResult).toBeNull();
+		expect(readBytesEmpty).not.toHaveBeenCalled();
+		expect(emptyTypeHarness.notices).toContain(
+			"当前环境不支持 WebP 编码，请改用 PNG"
+		);
+
+		const readBytesJpeg = vi.fn(async () => PNG_SIGNATURE.slice().buffer);
+		const jpegFallbackHarness = createExportHarness({
+			rasterBlobFactory: () => ({
+				type: "image/png",
+				arrayBuffer: readBytesJpeg,
+			}),
+		});
+
+		const jpegResult = await jpegFallbackHarness.pipeline.exportMindMap({
+			mind: { id: "m1" },
+			sourceBasename: "mind-map",
+			format: "jpeg",
+			destination: "local",
+			scale: 2,
+		});
+		expect(jpegResult).toBeNull();
+		expect(readBytesJpeg).not.toHaveBeenCalled();
+		expect(jpegFallbackHarness.localSaves).toHaveLength(0);
+		expect(jpegFallbackHarness.notices).toContain(
+			"当前环境不支持 JPEG 编码，请改用 PNG"
+		);
+	});
+
+	it("saves matching PNG and WebP blobs with their requested format, extension, and bytes", async () => {
+		const harness = createExportHarness({
+			localMethod: "picker",
+			rasterBlobFactory: (format) =>
+				format === "webp"
+					? new Blob([WEBP_SIGNATURE], { type: "IMAGE/WEBP; charset=binary" })
+					: new Blob([PNG_SIGNATURE], { type: "image/png" }),
+		});
+
+		const vaultPng = await harness.pipeline.exportMindMap({
+			mind: { id: "m1" },
+			sourceBasename: "Map",
+			format: "png",
+			destination: "vault",
+			vaultFolder: "",
+			scale: 2,
+		});
+		const vaultWebp = await harness.pipeline.exportMindMap({
+			mind: { id: "m1" },
+			sourceBasename: "Map",
+			format: "webp",
+			destination: "vault",
+			vaultFolder: "",
+			scale: 2,
+		});
+		const localPng = await harness.pipeline.exportMindMap({
+			mind: { id: "m1" },
+			sourceBasename: "Map",
+			format: "png",
+			destination: "local",
+			scale: 2,
+		});
+		const localWebp = await harness.pipeline.exportMindMap({
+			mind: { id: "m1" },
+			sourceBasename: "Map",
+			format: "webp",
+			destination: "local",
+			scale: 2,
+		});
+
+		expect(vaultPng).toBe("Map.png");
+		expect(vaultWebp).toBe("Map.webp");
+		expect(localPng).toBe("Map.png");
+		expect(localWebp).toBe("Map.webp");
+
+		expect(new Uint8Array(harness.binaryWrites.get("Map.png")!)).toEqual(
+			PNG_SIGNATURE
+		);
+		expect(new Uint8Array(harness.binaryWrites.get("Map.webp")!)).toEqual(
+			WEBP_SIGNATURE
+		);
+
+		expect(harness.localSaves).toHaveLength(2);
+		expect(harness.localSaves[0].suggestedName).toBe("Map.png");
+		expect(harness.localSaves[0].extension).toBe("png");
+		expect(harness.localSaves[0].mimeType).toBe("image/png");
+		expect(harness.localSaves[0].payload.kind).toBe("raster");
+		if (harness.localSaves[0].payload.kind === "raster") {
+			expect(harness.localSaves[0].payload.mimeType).toBe("image/png");
+			expect(new Uint8Array(harness.localSaves[0].payload.data)).toEqual(
+				PNG_SIGNATURE
+			);
+		}
+
+		expect(harness.localSaves[1].suggestedName).toBe("Map.webp");
+		expect(harness.localSaves[1].extension).toBe("webp");
+		expect(harness.localSaves[1].mimeType).toBe("image/webp");
+		expect(harness.localSaves[1].payload.kind).toBe("raster");
+		if (harness.localSaves[1].payload.kind === "raster") {
+			expect(harness.localSaves[1].payload.mimeType).toBe("image/webp");
+			expect(new Uint8Array(harness.localSaves[1].payload.data)).toEqual(
+				WEBP_SIGNATURE
+			);
+		}
 	});
 
 	it("provides consistent format metadata and shared vault path helpers", () => {

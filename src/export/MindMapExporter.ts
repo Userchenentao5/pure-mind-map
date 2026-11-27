@@ -3,6 +3,7 @@ import type MindElixir from "mind-elixir";
 import { resolveExportBackground } from "@mind-elixir/export-mindmap";
 import {
 	MindMapExportPipeline,
+	getExportFormatMeta,
 	type ExportDestination,
 	type ExportFormat,
 	type ExportFormatMeta,
@@ -167,7 +168,7 @@ export class MindMapExporter {
 		this.app = app;
 		this.pipeline = new MindMapExportPipeline<MindElixir>({
 			renderSvgSource: (mind) => this.captureSvgSource(mind, 1),
-			renderRasterBytes: (mind, format, options) =>
+			renderRasterBlob: (mind, format, options) =>
 				this.renderRasterFromSvg(mind, format, options),
 			normalizeVaultPath: (path) => normalizePath(path),
 			vaultPathExists: (path) =>
@@ -254,7 +255,7 @@ export class MindMapExporter {
 		mind: MindElixir,
 		format: Exclude<ExportFormat, "svg">,
 		options: { scale: number; quality: number }
-	): Promise<ArrayBuffer> {
+	): Promise<Blob> {
 		const scale = options.scale > 0 ? options.scale : 1;
 		const source = await this.captureSvgSource(mind, scale);
 		const scaledWidth = Math.max(1, Math.round(source.width * scale));
@@ -291,7 +292,8 @@ export class MindMapExporter {
 		await new Promise<void>((resolve) => window.setTimeout(resolve, 60));
 		ctx.drawImage(img, 0, 0);
 
-		const blob = await new Promise<Blob>((resolve, reject) => {
+		const mimeType = getExportFormatMeta(format).mimeType;
+		return await new Promise<Blob>((resolve, reject) => {
 			canvas.toBlob(
 				(result) => {
 					if (result) {
@@ -300,11 +302,10 @@ export class MindMapExporter {
 						reject(new Error("canvas.toBlob returned null"));
 					}
 				},
-				`image/${format}`,
+				mimeType,
 				options.quality
 			);
 		});
-		return await blob.arrayBuffer();
 	}
 
 	/**
